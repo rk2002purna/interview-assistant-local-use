@@ -33,10 +33,17 @@ function createMainWindow() {
   }
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  mainWindow.setAlwaysOnTop(true, 'screen-saver');
 
+  // Use 'floating' level on macOS for reliable always-on-top behavior
+  // 'screen-saver' can conflict with fullscreen apps on macOS
   if (process.platform === 'darwin') {
+    mainWindow.setAlwaysOnTop(true, 'floating', 1);
+    mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    mainWindow.setFullScreenable(false);
+    // Hide dock icon but keep window on top
     app.dock.hide();
+  } else {
+    mainWindow.setAlwaysOnTop(true, 'screen-saver');
   }
 
   mainWindow.on('closed', () => { mainWindow = null; });
@@ -71,6 +78,12 @@ ipcMain.on('hide-for-screenshot', () => {
 ipcMain.on('show-after-screenshot', () => {
   if (mainWindow) {
     mainWindow.showInactive();
+    // Re-apply always-on-top after showing (macOS can lose it)
+    if (process.platform === 'darwin') {
+      mainWindow.setAlwaysOnTop(true, 'floating', 1);
+    } else {
+      mainWindow.setAlwaysOnTop(true, 'screen-saver');
+    }
   }
 });
 
