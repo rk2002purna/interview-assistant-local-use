@@ -117,7 +117,16 @@
 const { ipcRenderer } = require('electron');
 
 // ===== STATE =====
-let apiKey = '', deepseekApiKey = '', geminiApiKey = '', aiProvider = 'gemini', deepseekModel = 'deepseek-v4-flash', geminiModel = 'gemini-flash-latest', conversationHistory = [], currentMode = 'manual', isListening = false;
+let apiKey = '', deepseekApiKey = '', geminiApiKey = '';
+let resumeContext = '', jobContext = '';
+// Routing config - holds primary + fallback for text and vision
+let routing = {
+  textPrimary: { provider: 'gemini', model: 'gemini-flash-latest' },
+  textFallback: { provider: 'groq', model: 'llama-3.3-70b-versatile' },
+  visionPrimary: { provider: 'gemini', model: 'gemini-flash-latest' },
+  visionFallback: { provider: 'groq', model: 'meta-llama/llama-4-scout-17b-16e-instruct' }
+};
+let conversationHistory = [], currentMode = 'manual', isListening = false;
 var appPlatform = 'win32'; // updated on init via IPC
 let mediaRecorder = null, audioContext = null, analyser = null, audioChunks = [], isProcessing = false, silenceDuration = 0, speechDetected = false;
 let passiveStream = null, passiveRecorder = null, passiveAudioContext = null, passiveAnalyser = null, passiveChunks = [], passiveProcessing = false;
@@ -128,16 +137,50 @@ const SILENCE_THRESHOLD_MS = 2500, MIN_AUDIO_SIZE = 500, SPEECH_VOLUME_THRESHOLD
 // ===== INIT =====
 async function init() {
   try { appPlatform = await ipcRenderer.invoke('get-platform'); } catch(e) {}
+  await reloadConfig();
+  loadChatHistory();
+}
+
+async function reloadConfig() {
   const config = await ipcRenderer.invoke('load-config');
   apiKey = config.apiKey || '';
   deepseekApiKey = config.deepseekApiKey || '';
   geminiApiKey = config.geminiApiKey || '';
-  aiProvider = config.aiProvider || 'gemini';
-  deepseekModel = config.deepseekModel || 'deepseek-v4-flash';
-  geminiModel = config.geminiModel || 'gemini-flash-latest';
-  if (!getActiveApiKey()) document.getElementById('api-warning').style.display = 'block';
+  resumeContext = config.resumeContext || '';
+  jobContext = config.jobContext || '';
+  if (config.routing) {
+    if (config.routing.textPrimary) routing.textPrimary = config.routing.textPrimary;
+    if (config.routing.textFallback) routing.textFallback = config.routing.textFallback;
+    if (config.routing.visionPrimary) routing.visionPrimary = config.routing.visionPrimary;
+    if (config.routing.visionFallback) routing.visionFallback = config.routing.visionFallback;
+  }
   if (config.screenCaptureInterval) screenCaptureIntervalMs = Math.max(1000, Math.min(10000, config.screenCaptureInterval * 1000));
-  loadChatHistory();
+
+  // Show warning if primary text provider has no key
+  var primaryKey = getKeyForProvider(routing.textPrimary.provider);
+  document.getElementById('api-warning').style.display = primaryKey ? 'none' : 'block';
+}
+
+// Build a system prompt with optional resume/job context appended
+function buildSystemPrompt(basePrompt) {
+  var contextBlock = '';
+  if (resumeContext) {
+    contextBlock += '\n\nUSER\'S BACKGROUND/RESUME:\n' + resumeContext;
+  }
+  if (jobContext) {
+    contextBlock += '\n\nTARGET ROLE / JOB:\n' + jobContext;
+  }
+  if (contextBlock) {
+    contextBlock += '\n\nUse this context to tailor your answers — frame examples around the user\'s experience and align responses with the target role when relevant.';
+  }
+  return basePrompt + contextBlock;
+}
+
+function getKeyForProvider(provider) {
+  if (provider === 'gemini') return geminiApiKey;
+  if (provider === 'deepseek') return deepseekApiKey;
+  if (provider === 'groq') return apiKey;
+  return '';
 }
 
 // ===== MODE SWITCHING =====
@@ -248,8 +291,12 @@ async function captureScreenshot() {
 
 async function analyzeScreenNow() {
   if (screenAnalyzing || capturedScreenshots.length === 0) return;
-  if (!getActiveApiKey()) {
-    document.getElementById('answer-text').textContent = 'Add API key in Settings';
+
+  // Check both vision providers' keys
+  var visionPrimaryKey = getKeyForProvider(routing.visionPrimary.provider);
+  var visionFallbackKey = routing.visionFallback && routing.visionFallback.provider ? getKeyForProvider(routing.visionFallback.provider) : '';
+  if (!visionPrimaryKey && !visionFallbackKey) {
+    document.getElementById('answer-text').textContent = 'No API key configured for vision. Add a key in Settings.';
     return;
   }
 
@@ -267,20 +314,9 @@ async function analyzeScreenNow() {
   var answerEl = document.getElementById('answer-text');
   answerEl.innerHTML = '<span class="thinking-dots">Analyzing ' + capturedScreenshots.length + ' screenshot(s)...</span>';
 
-  // Vision model requires Groq key
-  var visionKey = apiKey || getActiveApiKey();
-  if (!visionKey) {
-    answerEl.textContent = 'Groq API key required for screen analysis (vision). Add it in Settings.';
-    dot.classList.remove('thinking'); dot.classList.add('screen-active');
-    analyzeBtn.disabled = false; captureBtn.disabled = false;
-    updateCaptureCount();
-    screenAnalyzing = false;
-    return;
-  }
+  var systemPrompt = buildSystemPrompt('You are looking at one or more screenshots from an interview or coding assessment. They may be different scroll positions of the same page, or different screens. Treat ALL images as parts of the same question/problem.\n\nRead everything carefully — including diagrams, code, tables, images, constraints, examples — and provide a complete answer.\n\nRules:\n- Coding: provide complete working code\n- SQL: complete query\n- MCQ: state the correct option and explain briefly\n- Math: show steps and final answer\n- Diagrams/system design: explain clearly\n- General: concise direct answer\n- No preamble. Jump straight to the answer.');
 
-  var systemPrompt = 'You are looking at one or more screenshots from an interview or coding assessment. They may be different scroll positions of the same page, or different screens. Treat ALL images as parts of the same question/problem.\n\nRead everything carefully — including diagrams, code, tables, images, constraints, examples — and provide a complete answer.\n\nRules:\n- Coding: provide complete working code\n- SQL: complete query\n- MCQ: state the correct option and explain briefly\n- Math: show steps and final answer\n- Diagrams/system design: explain clearly\n- General: concise direct answer\n- No preamble. Jump straight to the answer.';
-
-  // Build multi-image content
+  // Build multi-image content (OpenAI-style; main.js converts to Gemini format if needed)
   var content = [];
   var count = capturedScreenshots.length;
   if (count === 1) {
@@ -295,18 +331,24 @@ async function analyzeScreenNow() {
     });
   }
 
+  var streamed = '';
+  var firstChunk = true;
   try {
-    var data = await ipcRenderer.invoke('call-ai-api', {
-      apiKey: visionKey,
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      messages: [{ role: 'user', content: content }],
-      systemPrompt: systemPrompt
-    });
+    var data = await callAIStream(
+      [{ role: 'user', content: content }],
+      systemPrompt,
+      function(delta) {
+        if (firstChunk) { answerEl.innerHTML = ''; firstChunk = false; }
+        streamed += delta;
+        answerEl.innerHTML = renderAnswer(streamed);
+      },
+      'vision'
+    );
 
     if (data.error) {
       answerEl.textContent = 'Error: ' + data.error.message;
     } else {
-      var ans = data.content[0].text;
+      var ans = (data.content && data.content[0] && data.content[0].text) || streamed;
       conversationHistory.push({ role: 'user', content: '[Screen analysis - ' + count + ' screenshot(s)]' });
       conversationHistory.push({ role: 'assistant', content: ans });
       saveChatHistory(); renderChatHistory();
@@ -686,23 +728,47 @@ function stopAllAudio(){isListening=false;isProcessing=false;if(mediaRecorder&&m
 async function toggleMic(){if(isListening){stopAllAudio();}else{var ok=await startAudioRecording();if(!ok)return;isListening=true;document.getElementById('mic-btn').textContent='\u23F9 Stop';document.getElementById('mic-btn').classList.add('active');document.getElementById('status-dot').classList.add('listening');}}
 
 // ===== AI (shared) =====
-async function callAIStream(messages, systemPrompt, onDelta) {
-  var streamId = 'stream_' + Date.now() + '_' + Math.random();
-  var provider, key, model;
-  if (aiProvider === 'gemini') {
-    provider = 'gemini';
-    key = geminiApiKey;
-    model = geminiModel || 'gemini-flash-latest';
-  } else if (aiProvider === 'deepseek') {
-    provider = 'deepseek';
-    key = deepseekApiKey;
-    model = deepseekModel;
-  } else {
-    provider = 'groq';
-    key = apiKey;
-    model = 'llama-3.3-70b-versatile';
+// Try primary, then fallback if primary errors. Streams tokens via onDelta.
+async function callAIStream(messages, systemPrompt, onDelta, target) {
+  // target = 'text' or 'vision'
+  var primary = target === 'vision' ? routing.visionPrimary : routing.textPrimary;
+  var fallback = target === 'vision' ? routing.visionFallback : routing.textFallback;
+
+  // Try primary
+  var primaryKey = getKeyForProvider(primary.provider);
+  if (primaryKey && primary.model) {
+    var result = await invokeProviderStream(primary.provider, primaryKey, primary.model, messages, systemPrompt, onDelta);
+    if (!result.error) return result;
+    // Primary failed — log and try fallback if configured
+    console.warn('Primary failed:', result.error.message);
+    if (!fallback || !fallback.provider || !fallback.model) return result;
+
+    var fallbackKey = getKeyForProvider(fallback.provider);
+    if (!fallbackKey) {
+      return { error: { message: 'Primary failed (' + result.error.message + '). Fallback ' + fallback.provider + ' has no API key.' } };
+    }
+
+    setStatus('Primary failed, trying fallback (' + fallback.provider + ')...');
+    var fallbackResult = await invokeProviderStream(fallback.provider, fallbackKey, fallback.model, messages, systemPrompt, onDelta);
+    if (fallbackResult.error) {
+      return { error: { message: 'Both primary and fallback failed. Primary: ' + result.error.message + '. Fallback: ' + fallbackResult.error.message } };
+    }
+    return fallbackResult;
   }
 
+  // No primary key — try fallback directly
+  if (fallback && fallback.provider && fallback.model) {
+    var fbKey = getKeyForProvider(fallback.provider);
+    if (fbKey) {
+      return await invokeProviderStream(fallback.provider, fbKey, fallback.model, messages, systemPrompt, onDelta);
+    }
+  }
+
+  return { error: { message: 'No API key configured for ' + primary.provider + ' (primary). Add a key in Settings.' } };
+}
+
+async function invokeProviderStream(provider, key, model, messages, systemPrompt, onDelta) {
+  var streamId = 'stream_' + Date.now() + '_' + Math.random();
   var listener = function(e, payload) {
     if (payload && payload.streamId === streamId && payload.delta) {
       onDelta(payload.delta);
@@ -721,13 +787,14 @@ async function callAIStream(messages, systemPrompt, onDelta) {
 }
 
 function getActiveApiKey() {
-  if (aiProvider === 'gemini') return geminiApiKey;
-  if (aiProvider === 'deepseek') return deepseekApiKey;
-  return apiKey;
+  // For UI gates — returns primary text key
+  return getKeyForProvider(routing.textPrimary.provider);
 }
 
 async function askQuestion(question){
-  if(!getActiveApiKey()){document.getElementById('answer-text').textContent='Add API key in Settings';return;}
+  if(!getActiveApiKey() && !getKeyForProvider((routing.textFallback||{}).provider)){
+    document.getElementById('answer-text').textContent='Add API key in Settings';return;
+  }
   var dot=document.getElementById('status-dot');dot.classList.remove('listening','passive','screen-active');dot.classList.add('thinking');setStatus('Getting answer...');
   var el=document.getElementById('answer-text');el.innerHTML='<span class="thinking-dots">Thinking...</span>';
   conversationHistory.push({role:'user',content:question});saveChatHistory();
@@ -735,12 +802,13 @@ async function askQuestion(question){
   var firstChunk=true;
   try{
     var data=await callAIStream(conversationHistory.slice(-6),
-      'You are a real-time interview assistant. Give concise direct answers. For coding: working code. For behavioral: STAR method. Keep under 200 words unless complex. No preamble.',
+      buildSystemPrompt('You are a real-time interview assistant. Give concise direct answers. For coding: working code. For behavioral: STAR method. Keep under 200 words unless complex. No preamble.'),
       function(delta){
         if(firstChunk){ el.innerHTML=''; firstChunk=false; setStatus('Answering...'); }
         streamed+=delta;
         el.innerHTML=renderAnswer(streamed);
-      }
+      },
+      'text'
     );
     if(data.error){el.textContent='Error: '+data.error.message;}
     else{
@@ -769,18 +837,8 @@ function setStatus(msg){document.getElementById('status-text').textContent=msg;}
 function openSettings(){ipcRenderer.send('open-settings');}
 function minimize(){ipcRenderer.send('minimize-window');}
 function closeApp(){ipcRenderer.send('close-app');}
-ipcRenderer.on('api-key-updated',function(e,key){apiKey=key;document.getElementById('api-warning').style.display=key?'none':'block';});
-ipcRenderer.on('provider-updated',function(e,provider){
-  aiProvider=provider;
-  // Reload full config to get all provider keys/models
-  ipcRenderer.invoke('load-config').then(function(config){
-    apiKey=config.apiKey||'';
-    deepseekApiKey=config.deepseekApiKey||'';
-    deepseekModel=config.deepseekModel||'deepseek-v4-flash';
-    geminiApiKey=config.geminiApiKey||'';
-    geminiModel=config.geminiModel||'gemini-flash-latest';
-    document.getElementById('api-warning').style.display=getActiveApiKey()?'none':'block';
-  });
+ipcRenderer.on('config-changed', function() {
+  reloadConfig();
 });
 init();
 </script>

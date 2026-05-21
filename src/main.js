@@ -105,6 +105,10 @@ ipcMain.on('provider-updated-broadcast', (event, provider) => {
   mainWindow?.webContents.send('provider-updated', provider);
 });
 
+ipcMain.on('config-changed-broadcast', () => {
+  mainWindow?.webContents.send('config-changed');
+});
+
 ipcMain.handle('load-config', () => {
   const configPath = path.join(os.homedir(), '.interview-assistant-config.json');
   if (fs.existsSync(configPath)) {

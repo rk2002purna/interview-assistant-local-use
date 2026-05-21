@@ -90,59 +90,80 @@
   <p class="sub">Configure your Interview Assistant</p>
 
   <div class="section">
-    <h2>🤖 AI Provider</h2>
-    <label>Select which AI provider to use</label>
-    <select id="ai-provider" onchange="onProviderChange()">
-      <option value="gemini">🟢 Gemini (3.5 Flash) — recommended</option>
-      <option value="groq">🟠 Groq AI (Llama 3.3 70B)</option>
+    <h2>💬 Text Q&A Model (Manual / Passive)</h2>
+    <label>Primary Provider</label>
+    <select id="text-primary-provider" onchange="updateModelDropdown('text-primary')">
+      <option value="gemini">🟢 Gemini</option>
+      <option value="groq">🟠 Groq</option>
       <option value="deepseek">🔵 DeepSeek</option>
     </select>
+    <br/>
+    <label>Primary Model</label>
+    <select id="text-primary-model"></select>
+
+    <br/>
+    <label>Fallback Provider <span style="color:#4a5568">(used if primary fails)</span></label>
+    <select id="text-fallback-provider" onchange="updateModelDropdown('text-fallback')">
+      <option value="">— None —</option>
+      <option value="gemini">🟢 Gemini</option>
+      <option value="groq">🟠 Groq</option>
+      <option value="deepseek">🔵 DeepSeek</option>
+    </select>
+    <br/>
+    <label>Fallback Model</label>
+    <select id="text-fallback-model"></select>
+    <p class="hint">If the primary returns an error (rate limit, quota, outage), the fallback is tried automatically.</p>
+  </div>
+
+  <div class="section">
+    <h2>👁 Screen Analyzer Model (Vision)</h2>
+    <label>Primary Provider</label>
+    <select id="vision-primary-provider" onchange="updateModelDropdown('vision-primary')">
+      <option value="gemini">🟢 Gemini</option>
+      <option value="groq">🟠 Groq</option>
+    </select>
+    <br/>
+    <label>Primary Model</label>
+    <select id="vision-primary-model"></select>
+
+    <br/>
+    <label>Fallback Provider</label>
+    <select id="vision-fallback-provider" onchange="updateModelDropdown('vision-fallback')">
+      <option value="">— None —</option>
+      <option value="gemini">🟢 Gemini</option>
+      <option value="groq">🟠 Groq</option>
+    </select>
+    <br/>
+    <label>Fallback Model</label>
+    <select id="vision-fallback-model"></select>
+    <p class="hint">DeepSeek doesn't support vision. Use Gemini or Groq for screen analysis.</p>
   </div>
 
   <div class="section" id="gemini-section">
-    <h2>🟢 Gemini Settings</h2>
+    <h2>🟢 Gemini API Key</h2>
     <label>Gemini API Key (stored locally on your machine only)</label>
     <input type="password" id="gemini-api-key" placeholder="AIza..." />
     <p class="hint">
       Get a free key at <a href="#" onclick="openExternal('https://aistudio.google.com/apikey')">aistudio.google.com/apikey</a>
     </p>
-
-    <br/>
-    <label>Gemini Model</label>
-    <select id="gemini-model">
-      <option value="gemini-flash-latest">⚡ gemini-flash-latest — Always points to newest Flash (recommended)</option>
-      <option value="gemini-3.5-flash">gemini-3.5-flash — Latest stable</option>
-      <option value="gemini-3-pro-preview">🧠 gemini-3-pro-preview — Deepest reasoning</option>
-      <option value="gemini-2.5-flash">gemini-2.5-flash — Previous generation</option>
-      <option value="gemini-2.5-pro">gemini-2.5-pro — Previous generation pro</option>
-    </select>
-    <p class="hint">"flash-latest" is a stable alias that always uses the newest Flash. Pick this if you get "invalid model" errors.</p>
   </div>
 
   <div class="section">
     <h2>🔑 Groq API Key</h2>
-    <label>API Key (stored locally on your machine only)</label>
+    <label>Groq API Key (also required for voice transcription)</label>
     <input type="password" id="api-key" placeholder="gsk_..." />
     <p class="hint">
-      Get a free key at <a href="#" onclick="openExternal('https://console.groq.com')">console.groq.com</a> — also used for screen analysis (vision) and audio transcription.
+      Get a free key at <a href="#" onclick="openExternal('https://console.groq.com')">console.groq.com</a> — used for voice-to-text and optionally for chat/vision.
     </p>
   </div>
 
   <div class="section" id="deepseek-section">
-    <h2>🔵 DeepSeek Settings</h2>
+    <h2>🔵 DeepSeek API Key</h2>
     <label>DeepSeek API Key (stored locally on your machine only)</label>
     <input type="password" id="deepseek-api-key" placeholder="sk-..." />
     <p class="hint">
       Get your key at <a href="#" onclick="openExternal('https://platform.deepseek.com')">platform.deepseek.com</a>
     </p>
-
-    <br/>
-    <label>DeepSeek Model</label>
-    <select id="deepseek-model">
-      <option value="deepseek-v4-flash">⚡ deepseek-v4-flash — Fast, real-time answers (recommended)</option>
-      <option value="deepseek-v4-pro">🧠 deepseek-v4-pro — Deep reasoning, complex problems</option>
-    </select>
-    <p class="hint">Flash is faster for interviews. Pro is better for complex coding problems.</p>
   </div>
 
   <div class="section">
@@ -154,13 +175,6 @@
     <br/>
     <label>Target Role / Job Description</label>
     <textarea id="job-context" placeholder="e.g. Senior Frontend Engineer at a fintech startup, React, TypeScript, Node.js..."></textarea>
-  </div>
-
-  <div class="section">
-    <h2>🖥 Screen Analyzer</h2>
-    <label>Screen Capture Interval (seconds)</label>
-    <input type="number" id="screen-interval" min="1" max="10" value="3" />
-    <div class="hint">How often to capture the screen for question detection (1-10 seconds). Lower = faster detection but more CPU.</div>
   </div>
 
   <div class="section">
@@ -183,43 +197,149 @@
   const { ipcRenderer } = require('electron');
   const { shell } = require('electron');
 
-  async function load() {
-    const config = await ipcRenderer.invoke('load-config');
-    if (config.apiKey) document.getElementById('api-key').value = config.apiKey;
-    if (config.resumeContext) document.getElementById('resume-context').value = config.resumeContext;
-    if (config.jobContext) document.getElementById('job-context').value = config.jobContext;
-    if (config.screenCaptureInterval) document.getElementById('screen-interval').value = config.screenCaptureInterval;
-    // Default to gemini for new installs (it's now the recommended primary)
-    document.getElementById('ai-provider').value = config.aiProvider || 'gemini';
-    if (config.deepseekApiKey) document.getElementById('deepseek-api-key').value = config.deepseekApiKey;
-    if (config.deepseekModel) document.getElementById('deepseek-model').value = config.deepseekModel;
-    if (config.geminiApiKey) document.getElementById('gemini-api-key').value = config.geminiApiKey;
-    document.getElementById('gemini-model').value = config.geminiModel || 'gemini-flash-latest';
-    onProviderChange();
+  // Catalog of models per provider, separated by capability (text vs vision)
+  const MODEL_CATALOG = {
+    gemini: {
+      text: [
+        { id: 'gemini-flash-latest', label: '⚡ gemini-flash-latest — Newest Flash' },
+        { id: 'gemini-3.5-flash', label: 'gemini-3.5-flash' },
+        { id: 'gemini-3-pro-preview', label: '🧠 gemini-3-pro-preview' },
+        { id: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
+        { id: 'gemini-2.5-pro', label: 'gemini-2.5-pro' }
+      ],
+      vision: [
+        { id: 'gemini-flash-latest', label: '⚡ gemini-flash-latest — Newest Flash (vision)' },
+        { id: 'gemini-3.5-flash', label: 'gemini-3.5-flash (vision)' },
+        { id: 'gemini-3-pro-preview', label: '🧠 gemini-3-pro-preview (vision)' },
+        { id: 'gemini-2.5-flash', label: 'gemini-2.5-flash (vision)' },
+        { id: 'gemini-2.5-pro', label: 'gemini-2.5-pro (vision)' }
+      ]
+    },
+    groq: {
+      text: [
+        { id: 'llama-3.3-70b-versatile', label: '⚡ llama-3.3-70b-versatile (recommended)' },
+        { id: 'llama-3.1-8b-instant', label: '🪶 llama-3.1-8b-instant — Fastest' },
+        { id: 'meta-llama/llama-4-scout-17b-16e-instruct', label: 'llama-4-scout-17b' },
+        { id: 'meta-llama/llama-4-maverick-17b-128e-instruct', label: 'llama-4-maverick-17b' }
+      ],
+      vision: [
+        { id: 'meta-llama/llama-4-scout-17b-16e-instruct', label: '⚡ llama-4-scout-17b (recommended for vision)' },
+        { id: 'meta-llama/llama-4-maverick-17b-128e-instruct', label: 'llama-4-maverick-17b' }
+      ]
+    },
+    deepseek: {
+      text: [
+        { id: 'deepseek-chat', label: '⚡ deepseek-chat (V3)' },
+        { id: 'deepseek-reasoner', label: '🧠 deepseek-reasoner (R1)' }
+      ],
+      vision: []
+    }
+  };
+
+  function populateModels(selectId, provider, capability) {
+    const sel = document.getElementById(selectId);
+    if (!sel) return;
+    sel.innerHTML = '';
+    if (!provider) {
+      sel.disabled = true;
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '(no provider selected)';
+      sel.appendChild(opt);
+      return;
+    }
+    const list = (MODEL_CATALOG[provider] && MODEL_CATALOG[provider][capability]) || [];
+    if (list.length === 0) {
+      sel.disabled = true;
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '(provider does not support ' + capability + ')';
+      sel.appendChild(opt);
+      return;
+    }
+    sel.disabled = false;
+    list.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label;
+      sel.appendChild(opt);
+    });
   }
 
-  function onProviderChange() {
-    const provider = document.getElementById('ai-provider').value;
-    document.getElementById('deepseek-section').style.display = provider === 'deepseek' ? 'block' : 'none';
-    document.getElementById('gemini-section').style.display = provider === 'gemini' ? 'block' : 'none';
+  function updateModelDropdown(prefix) {
+    // prefix is one of: 'text-primary', 'text-fallback', 'vision-primary', 'vision-fallback'
+    const provider = document.getElementById(prefix + '-provider').value;
+    const capability = prefix.startsWith('vision') ? 'vision' : 'text';
+    populateModels(prefix + '-model', provider, capability);
+  }
+
+  async function load() {
+    const config = await ipcRenderer.invoke('load-config');
+
+    // API keys
+    if (config.apiKey) document.getElementById('api-key').value = config.apiKey;
+    if (config.geminiApiKey) document.getElementById('gemini-api-key').value = config.geminiApiKey;
+    if (config.deepseekApiKey) document.getElementById('deepseek-api-key').value = config.deepseekApiKey;
+
+    // Other config
+    if (config.resumeContext) document.getElementById('resume-context').value = config.resumeContext;
+    if (config.jobContext) document.getElementById('job-context').value = config.jobContext;
+
+    // Routing config (with sensible defaults)
+    const routing = config.routing || {};
+    const textPrimary = routing.textPrimary || { provider: 'gemini', model: 'gemini-flash-latest' };
+    const textFallback = routing.textFallback || { provider: 'groq', model: 'llama-3.3-70b-versatile' };
+    const visionPrimary = routing.visionPrimary || { provider: 'gemini', model: 'gemini-flash-latest' };
+    const visionFallback = routing.visionFallback || { provider: 'groq', model: 'meta-llama/llama-4-scout-17b-16e-instruct' };
+
+    document.getElementById('text-primary-provider').value = textPrimary.provider;
+    updateModelDropdown('text-primary');
+    document.getElementById('text-primary-model').value = textPrimary.model;
+
+    document.getElementById('text-fallback-provider').value = textFallback.provider || '';
+    updateModelDropdown('text-fallback');
+    if (textFallback.model) document.getElementById('text-fallback-model').value = textFallback.model;
+
+    document.getElementById('vision-primary-provider').value = visionPrimary.provider;
+    updateModelDropdown('vision-primary');
+    document.getElementById('vision-primary-model').value = visionPrimary.model;
+
+    document.getElementById('vision-fallback-provider').value = visionFallback.provider || '';
+    updateModelDropdown('vision-fallback');
+    if (visionFallback.model) document.getElementById('vision-fallback-model').value = visionFallback.model;
   }
 
   function save() {
+    const routing = {
+      textPrimary: {
+        provider: document.getElementById('text-primary-provider').value,
+        model: document.getElementById('text-primary-model').value
+      },
+      textFallback: {
+        provider: document.getElementById('text-fallback-provider').value,
+        model: document.getElementById('text-fallback-model').value
+      },
+      visionPrimary: {
+        provider: document.getElementById('vision-primary-provider').value,
+        model: document.getElementById('vision-primary-model').value
+      },
+      visionFallback: {
+        provider: document.getElementById('vision-fallback-provider').value,
+        model: document.getElementById('vision-fallback-model').value
+      }
+    };
+
     const config = {
       apiKey: document.getElementById('api-key').value.trim(),
+      geminiApiKey: document.getElementById('gemini-api-key').value.trim(),
+      deepseekApiKey: document.getElementById('deepseek-api-key').value.trim(),
       resumeContext: document.getElementById('resume-context').value.trim(),
       jobContext: document.getElementById('job-context').value.trim(),
-      screenCaptureInterval: Math.max(1, Math.min(10, parseInt(document.getElementById('screen-interval').value) || 3)),
-      aiProvider: document.getElementById('ai-provider').value,
-      deepseekApiKey: document.getElementById('deepseek-api-key').value.trim(),
-      deepseekModel: document.getElementById('deepseek-model').value,
-      geminiApiKey: document.getElementById('gemini-api-key').value.trim(),
-      geminiModel: document.getElementById('gemini-model').value,
+      routing: routing
     };
 
     ipcRenderer.send('save-config', config);
-    ipcRenderer.send('api-key-updated-broadcast', config.apiKey);
-    ipcRenderer.send('provider-updated-broadcast', config.aiProvider);
+    ipcRenderer.send('config-changed-broadcast');
 
     const msg = document.getElementById('save-msg');
     msg.style.display = 'block';
