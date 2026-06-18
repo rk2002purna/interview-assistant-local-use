@@ -8,6 +8,8 @@ const { readActiveWindowText } = require('./screen-reader');
 
 let mainWindow;
 let settingsWindow;
+let miniMode = false;
+let savedBounds = null;
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -66,7 +68,39 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow(); });
 
 ipcMain.on('open-settings', () => createSettingsWindow());
-ipcMain.on('minimize-window', () => mainWindow?.minimize());
+ipcMain.on('minimize-window', () => {
+  if (!mainWindow) return;
+  if (!miniMode) {
+    savedBounds = mainWindow.getBounds();
+    const display = screen.getDisplayNearestPoint(
+      { x: savedBounds.x, y: savedBounds.y }
+    );
+    const { width: screenW, height: screenH, x: screenX, y: screenY } = display.workArea;
+    const miniSize = 48;
+    const margin = 20;
+    mainWindow.setMinimumSize(miniSize, miniSize);
+    mainWindow.setResizable(false);
+    mainWindow.setBounds({
+      x: screenX + screenW - miniSize - margin,
+      y: screenY + screenH - miniSize - margin,
+      width: miniSize,
+      height: miniSize
+    });
+    miniMode = true;
+    mainWindow.webContents.send('mini-mode', true);
+  }
+});
+
+ipcMain.on('restore-window', () => {
+  if (!mainWindow || !miniMode) return;
+  if (savedBounds) {
+    mainWindow.setResizable(true);
+    mainWindow.setMinimumSize(200, 300);
+    mainWindow.setBounds(savedBounds);
+  }
+  miniMode = false;
+  mainWindow.webContents.send('mini-mode', false);
+});
 ipcMain.on('close-app', () => app.quit());
 
 ipcMain.on('hide-for-screenshot', () => {
@@ -130,7 +164,7 @@ ipcMain.handle('call-ai-api', async (event, { apiKey, model, messages, systemPro
 
   const requestBody = {
     model: model,
-    max_tokens: 1024,
+    max_tokens: 1500,
     temperature: 0.7,
     messages: allMessages
   };
@@ -193,7 +227,7 @@ ipcMain.handle('call-deepseek-api', async (event, { apiKey, model, messages, sys
 
   const requestBody = {
     model: model,
-    max_tokens: 1024,
+    max_tokens: 1500,
     temperature: 0.7,
     messages: allMessages
   };
@@ -278,13 +312,22 @@ function messagesToGeminiContents(messages) {
   return contents;
 }
 
+// Gemini 2.5+ flash models use "thinking" tokens that eat into maxOutputTokens.
+// Disable thinking on flash so the full budget goes to the actual answer.
+function buildGeminiGenerationConfig(model) {
+  const cfg = { temperature: 0.7, maxOutputTokens: 1500 };
+  const m = (model || '').toLowerCase();
+  // Flash variants benefit from disabled thinking. Pro keeps thinking enabled.
+  if (m.includes('flash')) {
+    cfg.thinkingConfig = { thinkingBudget: 0 };
+  }
+  return cfg;
+}
+
 ipcMain.handle('call-gemini-api', async (event, { apiKey, model, messages, systemPrompt }) => {
   const requestBody = {
     contents: messagesToGeminiContents(messages),
-    generationConfig: {
-      temperature: 0.7,
-      maxOutputTokens: 1024
-    }
+    generationConfig: buildGeminiGenerationConfig(model)
   };
   if (systemPrompt) {
     requestBody.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -350,7 +393,7 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
   if (provider === 'gemini') {
     const requestBody = {
       contents: messagesToGeminiContents(messages),
-      generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
+      generationConfig: buildGeminiGenerationConfig(model)
     };
     if (systemPrompt) {
       requestBody.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -377,6 +420,7 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
         let fullText = '';
         let errorMsg = null;
         let rawData = ''; // accumulate raw response for error reporting
+        let finishReason = null;
 
         res.on('data', chunk => {
           const text = chunk.toString('utf8');
@@ -396,12 +440,19 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
                 errorMsg = json.error.message || JSON.stringify(json.error);
                 continue;
               }
-              if (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts) {
-                for (const part of json.candidates[0].content.parts) {
-                  if (part.text) {
-                    fullText += part.text;
-                    sender.send('ai-stream-chunk', { streamId: streamId, delta: part.text });
+              if (json.candidates && json.candidates[0]) {
+                const cand = json.candidates[0];
+                if (cand.content && cand.content.parts) {
+                  for (const part of cand.content.parts) {
+                    if (part.text) {
+                      fullText += part.text;
+                      sender.send('ai-stream-chunk', { streamId: streamId, delta: part.text });
+                    }
                   }
+                }
+                // Track finishReason — MAX_TOKENS means budget too small / thinking ate it all
+                if (cand.finishReason && cand.finishReason !== 'STOP' && cand.finishReason !== 'FINISH_REASON_UNSPECIFIED') {
+                  finishReason = cand.finishReason;
                 }
               }
             } catch (e) {
@@ -422,8 +473,20 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
             } catch(e) {}
             resolve({ error: { message: 'Gemini ' + res.statusCode + ': ' + parsedErr } });
           } else if (!fullText) {
-            resolve({ error: { message: 'Gemini returned empty response: ' + rawData.substring(0, 300) } });
+            if (finishReason === 'MAX_TOKENS') {
+              resolve({ error: { message: 'Gemini hit MAX_TOKENS before producing output (thinking tokens consumed the budget). Try a Flash model or raise maxOutputTokens.' } });
+            } else if (finishReason) {
+              resolve({ error: { message: 'Gemini stopped: ' + finishReason } });
+            } else {
+              resolve({ error: { message: 'Gemini returned empty response: ' + rawData.substring(0, 300) } });
+            }
           } else {
+            // Got partial text — append a hint if truncated
+            if (finishReason === 'MAX_TOKENS') {
+              const note = '\n\n[Response was truncated by token limit.]';
+              sender.send('ai-stream-chunk', { streamId: streamId, delta: note });
+              fullText += note;
+            }
             resolve({ content: [{ text: fullText }] });
           }
         });
@@ -452,7 +515,7 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
 
   const requestBody = {
     model: model,
-    max_tokens: 1024,
+    max_tokens: 1500,
     temperature: 0.7,
     messages: allMessages,
     stream: true
