@@ -67,6 +67,26 @@
     .chat-q { font-size: 11px; color: #63b3ed; font-weight: 600; margin-bottom: 3px; }
     .chat-a { font-size: 11px; color: #a0aec0; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
     .chat-empty { padding: 20px; text-align: center; color: #4a5568; font-size: 11px; }
+
+    /* Usage tracking panel */
+    #usage-btn { background: rgba(72,187,120,0.1); border: 1px solid rgba(72,187,120,0.2); color: #68d391; padding: 3px 10px; border-radius: 12px; cursor: pointer; font-size: 10px; font-weight: 600; }
+    #usage-btn.active { background: rgba(72,187,120,0.3); border-color: rgba(72,187,120,0.5); }
+    #usage-panel { display: none; flex-direction: column; background: rgba(0,0,0,0.3); border-bottom: 1px solid rgba(99,179,237,0.1); max-height: 220px; overflow-y: auto; flex-shrink: 0; font-size: 10px; }
+    #usage-panel.visible { display: flex; }
+    #usage-stats { padding: 8px 14px; border-bottom: 1px solid rgba(99,179,237,0.08); }
+    #usage-stats table { width: 100%; border-collapse: collapse; }
+    #usage-stats th { color: #4a5568; font-size: 9px; text-transform: uppercase; text-align: left; padding: 2px 6px; }
+    #usage-stats td { color: #a0aec0; padding: 3px 6px; border-bottom: 1px solid rgba(99,179,237,0.05); }
+    #usage-stats .provider-name { color: #e2e8f0; font-weight: 600; }
+    #usage-stats .tokens-used { color: #fbd38d; }
+    #usage-stats .provider-active { color: #68d391; font-weight: 700; }
+    #usage-stats .provider-fallback { color: #ed8936; }
+    #usage-log { padding: 6px 14px; }
+    #usage-log .log-entry { padding: 2px 0; color: #718096; font-size: 9px; border-bottom: 1px solid rgba(99,179,237,0.03); }
+    #usage-log .log-entry .log-provider { color: #a0aec0; font-weight: 600; }
+    #usage-log .log-entry .log-tokens { color: #fbd38d; }
+    #usage-log .log-entry .log-error { color: #fc5c65; }
+
     .hide-in-passive { transition: opacity 0.3s; }
     .passive-active .hide-in-passive, .screen-active .hide-in-passive { opacity: 0.3; pointer-events: none; max-height: 0; overflow: hidden; padding: 0; }
 
@@ -113,6 +133,7 @@
     <span id="status-text">Ready</span>
     <button id="chat-history-btn" onclick="toggleChatHistory()">&#128172; Memory</button>
     <button id="clear-history-btn" onclick="clearChatHistory()">Clear</button>
+    <button id="usage-btn" onclick="toggleUsagePanel()">&#128200; Usage</button>
     <button id="mic-btn" onclick="toggleMic()">&#9654; Start</button>
   </div>
   <div id="screen-indicator" class="mode-indicator">
@@ -125,6 +146,10 @@
     <button id="clear-captures-btn" onclick="clearCaptures()" style="margin-top:6px; width:100%; padding:6px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1); color:#a0aec0; border-radius:6px; cursor:pointer; font-size:11px;">🗑️ Clear captures</button>
   </div>
   <div id="chat-history-panel"><div id="chat-history-list"></div></div>
+  <div id="usage-panel">
+    <div id="usage-stats"></div>
+    <div id="usage-log"></div>
+  </div>
   <div id="api-warning">No API key set. <a onclick="openSettings()">Add your API key in Settings</a></div>
   <div id="transcript-box"><div class="label">Detected Question</div><div id="transcript-text"></div></div>
   <div id="answer-wrap"><div class="label">Answer</div><div id="answer-text">Select a mode to get started.</div></div>
@@ -153,7 +178,7 @@ let mediaRecorder = null, audioContext = null, analyser = null, audioChunks = []
 let passiveStream = null, passiveRecorder = null, passiveAudioContext = null, passiveAnalyser = null, passiveChunks = [], passiveProcessing = false;
 let passiveLevelHistory = [], passiveSpeaking = false, passiveSilenceFrames = 0, passiveSpeechFrames = 0, passiveBaseline = 0, passiveMonitorTimer = null, passiveActiveTranscriptions = 0;
 let screenCaptureInterval = null, screenLastText = '', screenProcessing = false, screenStitcherBuffer = '', screenStitcherTimer = null, screenProcessedQuestions = [], screenCaptureIntervalMs = 4000;
-const SILENCE_THRESHOLD_MS = 2500, MIN_AUDIO_SIZE = 500, SPEECH_VOLUME_THRESHOLD = 25;
+const SILENCE_THRESHOLD_MS = 2500, MIN_AUDIO_SIZE = 4096, SPEECH_VOLUME_THRESHOLD = 25;
 
 // ===== INIT =====
 async function init() {
@@ -768,6 +793,7 @@ async function callAIStream(messages, systemPrompt, onDelta, target) {
     var result = await invokeProviderStream(primary.provider, primaryKey, primary.model, messages, systemPrompt, onDelta);
     if (!result.error) return result;
     // Primary failed — log and try fallback if configured
+    trackUsage({ provider: primary.provider, model: primary.model, usage: {}, error: result.error.message });
     console.warn('Primary failed:', result.error.message);
     if (!fallback || !fallback.provider || !fallback.model) return result;
 
@@ -779,6 +805,7 @@ async function callAIStream(messages, systemPrompt, onDelta, target) {
     setStatus('Primary failed, trying fallback (' + fallback.provider + ')...');
     var fallbackResult = await invokeProviderStream(fallback.provider, fallbackKey, fallback.model, messages, systemPrompt, onDelta);
     if (fallbackResult.error) {
+      trackUsage({ provider: fallback.provider, model: fallback.model, usage: {}, error: fallbackResult.error.message });
       return { error: { message: 'Both primary and fallback failed. Primary: ' + result.error.message + '. Fallback: ' + fallbackResult.error.message } };
     }
     return fallbackResult;
@@ -893,6 +920,98 @@ function saveChatHistory(){try{localStorage.setItem('interviewChatHistory',JSON.
 function renderChatHistory(){var list=document.getElementById('chat-history-list');var u=conversationHistory.filter(function(m){return m.role==='user';});if(!u.length){list.innerHTML='<div class="chat-empty">No history</div>';return;}var a=conversationHistory.filter(function(m){return m.role==='assistant';});list.innerHTML=u.map(function(m,i){return '<div class="chat-item"><div class="chat-q">Q: '+escapeHtml(m.content.substring(0,60))+'</div><div class="chat-a">A: '+escapeHtml((a[i]?a[i].content:'').substring(0,100))+'</div></div>';}).join('');}
 function toggleChatHistory(){document.getElementById('chat-history-panel').classList.toggle('visible');document.getElementById('chat-history-btn').classList.toggle('active');}
 function clearChatHistory(){if(confirm('Clear history?')){conversationHistory=[];saveChatHistory();renderChatHistory();setStatus('Cleared');}}
+
+// ===== USAGE TRACKING =====
+var usageByProvider = {};   // { gemini: { calls:0, promptTokens:0, compTokens:0, totalTokens:0 }, groq: {...}, ... }
+var usageLog = [];          // [{ time, provider, model, tokens, error }]
+var activeProvider = null;  // currently active provider name
+
+function trackUsage(data) {
+  var p = data.provider || 'unknown';
+  var u = data.usage || {};
+  if (!usageByProvider[p]) {
+    usageByProvider[p] = { calls: 0, promptTokens: 0, compTokens: 0, totalTokens: 0 };
+  }
+  usageByProvider[p].calls++;
+  usageByProvider[p].promptTokens += u.prompt_tokens || 0;
+  usageByProvider[p].compTokens += u.completion_tokens || 0;
+  usageByProvider[p].totalTokens += u.total_tokens || 0;
+  activeProvider = p;
+
+  usageLog.unshift({
+    time: new Date().toLocaleTimeString(),
+    provider: p,
+    model: data.model || '',
+    tokens: u.total_tokens || 0,
+    estimated: u.estimated || false,
+    error: data.error || null
+  });
+  if (usageLog.length > 50) usageLog.length = 50; // keep last 50
+
+  renderUsagePanel();
+}
+
+function renderUsagePanel() {
+  var statsEl = document.getElementById('usage-stats');
+  var logEl = document.getElementById('usage-log');
+
+  // Build stats table
+  var providers = Object.keys(usageByProvider);
+  if (providers.length === 0) {
+    statsEl.innerHTML = '<div style="color:#4a5568;padding:4px 0;">No API calls yet. Start a session to see usage.</div>';
+  } else {
+    var html = '<table><tr><th>Provider</th><th>Calls</th><th>Tokens</th><th>Status</th></tr>';
+    for (var i = 0; i < providers.length; i++) {
+      var p = providers[i];
+      var d = usageByProvider[p];
+      var statusClass = '';
+      var statusText = '—';
+      if (p === activeProvider) {
+        statusClass = 'provider-active';
+        statusText = '● Active';
+      } else if (p === (routing.textFallback || {}).provider) {
+        statusClass = 'provider-fallback';
+        statusText = 'Fallback';
+      }
+      html += '<tr>';
+      html += '<td class="provider-name">' + p.charAt(0).toUpperCase() + p.slice(1) + '</td>';
+      html += '<td>' + d.calls + '</td>';
+      html += '<td class="tokens-used">' + d.totalTokens.toLocaleString() + (d.estimated ? '~' : '') + '</td>';
+      html += '<td class="' + statusClass + '">' + statusText + '</td>';
+      html += '</tr>';
+    }
+    html += '</table>';
+    statsEl.innerHTML = html;
+  }
+
+  // Build log (last 15 entries)
+  var logHtml = '';
+  var show = Math.min(usageLog.length, 15);
+  for (var j = 0; j < show; j++) {
+    var e = usageLog[j];
+    var cls = e.error ? 'log-error' : '';
+    logHtml += '<div class="log-entry ' + cls + '">';
+    logHtml += '<span style="color:#4a5568;">' + e.time + '</span> ';
+    logHtml += '<span class="log-provider">' + e.provider + '</span> ';
+    logHtml += e.error
+      ? '<span class="log-error">✗ ' + escapeHtml(e.error.substring(0, 60)) + '</span>'
+      : '<span class="log-tokens">' + e.tokens.toLocaleString() + ' tok</span>';
+    logHtml += ' <span style="color:#4a5568;">' + e.model + '</span>';
+    if (e.estimated) logHtml += ' <span style="color:#718096;">(est)</span>';
+    logHtml += '</div>';
+  }
+  logEl.innerHTML = logHtml || '<div style="color:#4a5568;">No calls logged.</div>';
+}
+
+function toggleUsagePanel() {
+  document.getElementById('usage-panel').classList.toggle('visible');
+  document.getElementById('usage-btn').classList.toggle('active');
+}
+
+// Listen for usage updates from main process
+ipcRenderer.on('ai-usage-update', function(_event, data) {
+  trackUsage(data);
+});
 
 // ===== UTIL =====
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();askManual();}}

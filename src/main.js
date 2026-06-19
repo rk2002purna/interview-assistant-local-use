@@ -194,6 +194,14 @@ ipcMain.handle('call-ai-api', async (event, { apiKey, model, messages, systemPro
           if (json.error) {
             resolve({ error: { message: json.error.message } });
           } else if (json.choices && json.choices[0] && json.choices[0].message) {
+            // Track Groq usage from response
+            if (json.usage) {
+              event.sender.send('ai-usage-update', {
+                provider: 'groq',
+                model: model,
+                usage: json.usage
+              });
+            }
             resolve({ content: [{ text: json.choices[0].message.content }] });
           } else {
             resolve({ error: { message: 'Unexpected response' } });
@@ -257,6 +265,14 @@ ipcMain.handle('call-deepseek-api', async (event, { apiKey, model, messages, sys
           if (json.error) {
             resolve({ error: { message: json.error.message } });
           } else if (json.choices && json.choices[0] && json.choices[0].message) {
+            // Track DeepSeek usage from response
+            if (json.usage) {
+              event.sender.send('ai-usage-update', {
+                provider: 'deepseek',
+                model: model,
+                usage: json.usage
+              });
+            }
             resolve({ content: [{ text: json.choices[0].message.content }] });
           } else {
             resolve({ error: { message: 'Unexpected response' } });
@@ -359,6 +375,18 @@ ipcMain.handle('call-gemini-api', async (event, { apiKey, model, messages, syste
             resolve({ error: { message: 'Gemini ' + (res.statusCode || '?') + ': ' + (json.error.message || JSON.stringify(json.error)) } });
           } else if (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts) {
             const text = json.candidates[0].content.parts.map(p => p.text || '').join('');
+            // Track Gemini usage from response metadata
+            if (json.usageMetadata) {
+              event.sender.send('ai-usage-update', {
+                provider: 'gemini',
+                model: model,
+                usage: {
+                  prompt_tokens: json.usageMetadata.promptTokenCount || 0,
+                  completion_tokens: json.usageMetadata.candidatesTokenCount || 0,
+                  total_tokens: json.usageMetadata.totalTokenCount || 0
+                }
+              });
+            }
             resolve({ content: [{ text: text }] });
           } else if (json.promptFeedback && json.promptFeedback.blockReason) {
             resolve({ error: { message: 'Blocked by Gemini: ' + json.promptFeedback.blockReason } });
@@ -487,17 +515,31 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
               sender.send('ai-stream-chunk', { streamId: streamId, delta: note });
               fullText += note;
             }
+            // Estimate Gemini token usage (streaming doesn't return usage)
+            const estPrompt = Math.ceil(JSON.stringify(messages).length / 4);
+            const estComp = Math.ceil(fullText.length / 4);
+            sender.send('ai-usage-update', {
+              provider: 'gemini',
+              model: model,
+              usage: { prompt_tokens: estPrompt, completion_tokens: estComp, total_tokens: estPrompt + estComp, estimated: true }
+            });
             resolve({ content: [{ text: fullText }] });
           }
         });
       });
 
       req.on('error', (e) => {
+        sender.send('ai-usage-update', {
+          provider: 'gemini', model: model, usage: {}, error: 'Network error: ' + e.message
+        });
         resolve({ error: { message: 'Network error: ' + e.message } });
       });
 
       req.setTimeout(30000, () => {
         req.destroy();
+        sender.send('ai-usage-update', {
+          provider: 'gemini', model: model, usage: {}, error: 'Request timed out'
+        });
         resolve({ error: { message: 'Request timed out' } });
       });
 
@@ -518,7 +560,8 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
     max_tokens: 1500,
     temperature: 0.7,
     messages: allMessages,
-    stream: true
+    stream: true,
+    stream_options: { include_usage: true }
   };
 
   const body = JSON.stringify(requestBody);
@@ -552,14 +595,18 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
     };
 
     const req = https.request(options, (res) => {
-      let buffer = '';
+      let sseBuffer = '';
       let fullText = '';
       let errorMsg = null;
+      let streamUsage = null;
+      let rawBody = '';
 
       res.on('data', chunk => {
-        buffer += chunk.toString('utf8');
-        const lines = buffer.split('\n');
-        buffer = lines.pop(); // last line may be incomplete
+        const text = chunk.toString('utf8');
+        rawBody += text;
+        sseBuffer += text;
+        const lines = sseBuffer.split('\n');
+        sseBuffer = lines.pop(); // last line may be incomplete
 
         for (const line of lines) {
           const trimmed = line.trim();
@@ -570,6 +617,11 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
             const json = JSON.parse(data);
             if (json.error) {
               errorMsg = json.error.message || 'API error';
+              continue;
+            }
+            // Capture usage from the final chunk (stream_options: include_usage)
+            if (json.usage) {
+              streamUsage = json.usage;
               continue;
             }
             const delta = json.choices && json.choices[0] && json.choices[0].delta;
@@ -584,20 +636,48 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
       });
 
       res.on('end', () => {
+        // If HTTP error or we got nothing, try to parse the raw body as a plain JSON error
+        if (!errorMsg && !fullText && res.statusCode && res.statusCode >= 400) {
+          try {
+            const errJson = JSON.parse(rawBody);
+            if (errJson.error && errJson.error.message) {
+              errorMsg = errJson.error.message;
+            }
+          } catch(e) {
+            errorMsg = 'HTTP ' + res.statusCode + ': ' + rawBody.substring(0, 200);
+          }
+        }
+
         if (errorMsg) {
+          sender.send('ai-usage-update', {
+            provider: provider, model: model, usage: {}, error: errorMsg
+          });
           resolve({ error: { message: errorMsg } });
         } else {
-          resolve({ content: [{ text: fullText }] });
+          if (streamUsage) {
+            sender.send('ai-usage-update', {
+              provider: provider, model: model, usage: streamUsage
+            });
+          }
+          const result = { content: [{ text: fullText }] };
+          if (streamUsage) result.usage = streamUsage;
+          resolve(result);
         }
       });
     });
 
     req.on('error', (e) => {
+      sender.send('ai-usage-update', {
+        provider: provider, model: model, usage: {}, error: 'Network error: ' + e.message
+      });
       resolve({ error: { message: 'Network error: ' + e.message } });
     });
 
     req.setTimeout(30000, () => {
       req.destroy();
+      sender.send('ai-usage-update', {
+        provider: provider, model: model, usage: {}, error: 'Request timed out'
+      });
       resolve({ error: { message: 'Request timed out' } });
     });
 
@@ -672,12 +752,19 @@ ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData }) => {
     const audioBuffer = Buffer.from(audioData, 'base64');
     fs.writeFileSync(tempPath, audioBuffer);
 
+    // Guard: reject tiny/corrupt files before hitting the API
+    const fileSize = fs.statSync(tempPath).size;
+    if (fileSize < 1024) {
+      try { fs.unlinkSync(tempPath); } catch(e) {}
+      return { error: { message: 'Audio too short or empty — please speak clearly and try again.' } };
+    }
+
     return new Promise((resolve) => {
       const curl = spawn('curl', [
         '-s', 'https://api.groq.com/openai/v1/audio/transcriptions',
         '-X', 'POST',
         '-H', `Authorization: Bearer ${apiKey}`,
-        '-F', `file=@${tempPath}`,
+        '-F', `file=@${tempPath};type=audio/webm`,
         '-F', 'model=whisper-large-v3',
         '-F', 'response_format=json',
         '-F', 'language=en',
@@ -695,7 +782,8 @@ ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData }) => {
         try { fs.unlinkSync(tempPath); } catch(e) {}
 
         if (code !== 0) {
-          resolve({ error: { message: 'Transcription failed' } });
+          const errMsg = errorData ? errorData.trim() : 'curl exited with code ' + code;
+          resolve({ error: { message: 'Transcription failed: ' + errMsg } });
           return;
         }
 
@@ -707,8 +795,13 @@ ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData }) => {
             resolve({ text: json.text });
           }
         } catch (e) {
-          resolve({ error: { message: 'Parse error' } });
+          resolve({ error: { message: 'Parse error: ' + data.substring(0, 200) } });
         }
+      });
+
+      curl.on('error', (err) => {
+        try { fs.unlinkSync(tempPath); } catch(e) {}
+        resolve({ error: { message: 'curl not found — please install curl or check your PATH.' } });
       });
     });
   } catch (e) {
