@@ -8,7 +8,7 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: transparent; color: #e2e8f0; user-select: none; height: 100vh; overflow: hidden; }
     #app { background: rgba(15,15,25,0.85); border: 1px solid rgba(99,179,237,0.15); border-radius: 14px; height: 100vh; display: flex; flex-direction: column; backdrop-filter: blur(8px); overflow: hidden; }
-    #titlebar { -webkit-app-region: drag; background: transparent; padding: 8px 10px; display: flex; align-items: center; justify-content: flex-end; flex-shrink: 0; }
+    #titlebar { -webkit-app-region: drag; background: rgba(0,0,0,0.15); padding: 6px 10px; display: flex; align-items: center; justify-content: flex-end; flex-shrink: 0; border-top: 1px solid rgba(99,179,237,0.08); }
     .win-btns { -webkit-app-region: no-drag; display: flex; gap: 6px; }
     .win-btn { width: 18px; height: 18px; border-radius: 50%; border: none; cursor: pointer; font-size: 9px; display: flex; align-items: center; justify-content: center; }
     .btn-close { background: #fc5c65; color: #7a0000; }
@@ -40,8 +40,8 @@
     #transcript-box.visible { max-height: 120px; padding: 8px 14px; overflow-y: auto; }
     #transcript-box .label { font-size: 9px; color: #4a5568; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px; }
     #transcript-text { font-size: 12px; color: #a0aec0; line-height: 1.5; font-style: italic; }
-    #answer-wrap { flex: 1; overflow-y: auto; padding: 12px 14px; }
-    #answer-wrap .label { font-size: 9px; color: #4a5568; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; }
+    #answer-wrap { flex: 1; overflow-y: auto; padding: 10px 14px; }
+    #answer-wrap .label { display: none; }
     #answer-text { font-size: 13px; color: #e2e8f0; line-height: 1.7; white-space: pre-wrap; }
     #answer-text .thinking-dots { color: #ed8936; }
     #answer-text code { background: rgba(99,179,237,0.12); color: #90cdf4; padding: 1px 5px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 12px; }
@@ -103,11 +103,6 @@
       align-items: center;
       justify-content: center;
       box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-      transition: transform 0.15s, box-shadow 0.15s;
-    }
-    #mini-restore-btn:hover {
-      transform: scale(1.1);
-      box-shadow: 0 4px 16px rgba(254,211,48,0.5);
     }
     body.mini-mode #app        { display: none !important; }
     body.mini-mode #mini-restore-btn { display: flex; }
@@ -117,24 +112,9 @@
 <body>
 <button id="mini-restore-btn" onclick="restoreWindow()" title="Restore">&#9744;</button>
 <div id="app">
-  <div id="titlebar"><div class="win-btns">
-    <button class="win-btn btn-set" onclick="openSettings()" title="Settings">&#9881;</button>
-    <button class="win-btn btn-min" onclick="minimize()" title="Minimize">&minus;</button>
-    <button class="win-btn btn-close" onclick="closeApp()" title="Close">&#10005;</button>
-  </div></div>
-  <div id="mode-toggle-bar">
-    <button class="mode-btn active" id="manual-mode-btn" onclick="switchMode('manual')">&#127908; Manual</button>
-    <button class="mode-btn" id="passive-mode-btn" onclick="switchMode('passive')">&#128065; Passive</button>
-    <button class="mode-btn" id="screen-mode-btn" onclick="switchMode('screen')">&#128421; Screen Analyzer</button>
-  </div>
-  <div id="statusbar">
-    <div class="status-dot" id="status-dot"></div>
-    <span id="status-text">Ready</span>
-    <button id="chat-history-btn" onclick="toggleChatHistory()">&#128172; Memory</button>
-    <button id="clear-history-btn" onclick="clearChatHistory()">Clear</button>
-    <button id="usage-btn" onclick="toggleUsagePanel()">&#128200; Usage</button>
-    <button id="mic-btn" onclick="toggleMic()">&#9654; Start</button>
-  </div>
+  <div id="answer-wrap"><div class="label">Answer</div><div id="answer-text">Select a mode to get started.</div></div>
+  <div id="transcript-box"><div class="label">Detected Question</div><div id="transcript-text"></div></div>
+  <div id="api-warning">No API key set. <a onclick="openSettings()">Add your API key in Settings</a></div>
   <div id="screen-indicator" class="mode-indicator">
     <div class="label">Screen Analyzer</div>
     <div class="info">Scroll to each part of the question and click Capture. When done, click Analyze to get the answer.</div>
@@ -149,13 +129,28 @@
     <div id="usage-stats"></div>
     <div id="usage-log"></div>
   </div>
-  <div id="api-warning">No API key set. <a onclick="openSettings()">Add your API key in Settings</a></div>
-  <div id="transcript-box"><div class="label">Detected Question</div><div id="transcript-text"></div></div>
-  <div id="answer-wrap"><div class="label">Answer</div><div id="answer-text">Select a mode to get started.</div></div>
   <div id="input-area" class="hide-in-passive">
     <textarea id="manual-input" placeholder="Type a question..." onkeydown="handleKey(event)"></textarea>
     <button id="ask-btn" onclick="askManual()">Ask</button>
   </div>
+  <div id="statusbar">
+    <div class="status-dot" id="status-dot"></div>
+    <span id="status-text">Ready</span>
+    <button id="chat-history-btn" onclick="toggleChatHistory()">&#128172; Memory</button>
+    <button id="clear-history-btn" onclick="clearChatHistory()">Clear</button>
+    <button id="usage-btn" onclick="toggleUsagePanel()">&#128200; Usage</button>
+    <button id="mic-btn" onclick="toggleMic()">&#9654; Start</button>
+  </div>
+  <div id="mode-toggle-bar">
+    <button class="mode-btn active" id="manual-mode-btn" onclick="switchMode('manual')">&#127908; Manual</button>
+    <button class="mode-btn" id="passive-mode-btn" onclick="switchMode('passive')">&#128065; Passive</button>
+    <button class="mode-btn" id="screen-mode-btn" onclick="switchMode('screen')">&#128421; Screen Analyzer</button>
+  </div>
+  <div id="titlebar"><div class="win-btns">
+    <button class="win-btn btn-set" onclick="openSettings()" title="Settings">&#9881;</button>
+    <button class="win-btn btn-min" onclick="minimize()" title="Minimize">&minus;</button>
+    <button class="win-btn btn-close" onclick="closeApp()" title="Close">&#10005;</button>
+  </div></div>
 </div>
 
 <script>
@@ -1019,9 +1014,15 @@ function renderAnswer(text){return text.replace(/```(\w*)\n?([\s\S]*?)```/g,func
 function escapeHtml(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function setStatus(msg){document.getElementById('status-text').textContent=msg;}
 function openSettings(){ipcRenderer.send('open-settings');}
-function minimize(){ipcRenderer.send('minimize-window');}
+function minimize(){
+  document.body.classList.add('mini-mode'); // hide immediately, don't wait for IPC round-trip
+  ipcRenderer.send('minimize-window');
+}
 function closeApp(){ipcRenderer.send('close-app');}
-function restoreWindow(){ipcRenderer.send('restore-window');}
+function restoreWindow(){
+  document.body.classList.remove('mini-mode'); // restore immediately
+  ipcRenderer.send('restore-window');
+}
 ipcRenderer.on('mini-mode', function(_event, isMini) {
   if (isMini) {
     document.body.classList.add('mini-mode');
