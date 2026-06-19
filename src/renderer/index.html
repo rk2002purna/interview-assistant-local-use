@@ -128,6 +128,9 @@
   <div id="usage-panel">
     <div id="usage-stats"></div>
     <div id="usage-log"></div>
+    <div style="padding:6px 14px 8px; border-top:1px solid rgba(99,179,237,0.06);">
+      <button id="clear-usage-btn" onclick="clearUsageData()" style="width:100%;padding:5px;background:rgba(252,92,101,0.12);border:1px solid rgba(252,92,101,0.25);color:#fc5c65;border-radius:6px;cursor:pointer;font-size:10px;font-weight:600;">🗑 Clear Usage Data</button>
+    </div>
   </div>
   <div id="input-area" class="hide-in-passive">
     <textarea id="manual-input" placeholder="Type a question..." onkeydown="handleKey(event)"></textarea>
@@ -157,7 +160,7 @@
 const { ipcRenderer } = require('electron');
 
 // ===== STATE =====
-let apiKey = '', deepseekApiKey = '', geminiApiKey = '', cerebrasApiKey = '';
+let apiKey = '', deepseekApiKey = '', geminiApiKey = '', cerebrasApiKey = '', digitaloceanApiKey = '';
 let resumeContext = '', jobContext = '';
 // Routing config - holds primary + fallback for text and vision
 let routing = {
@@ -187,6 +190,7 @@ async function reloadConfig() {
   deepseekApiKey = config.deepseekApiKey || '';
   geminiApiKey = config.geminiApiKey || '';
   cerebrasApiKey = config.cerebrasApiKey || '';
+  digitaloceanApiKey = config.digitaloceanApiKey || '';
   resumeContext = config.resumeContext || '';
   jobContext = config.jobContext || '';
   if (config.routing) {
@@ -228,6 +232,7 @@ function getKeyForProvider(provider) {
   if (provider === 'gemini') return geminiApiKey;
   if (provider === 'deepseek') return deepseekApiKey;
   if (provider === 'cerebras') return cerebrasApiKey;
+  if (provider === 'digitalocean') return digitaloceanApiKey;
   if (provider === 'groq') return apiKey;
   return '';
 }
@@ -389,7 +394,9 @@ async function analyzeScreenNow() {
         streamed += delta;
         answerEl.innerHTML = renderAnswer(streamed);
       },
-      'vision'
+      'vision',
+      600,   // vision always gets full token budget — screen may contain complex problems
+      0.25
     );
 
     if (data.error) {
@@ -690,7 +697,7 @@ async function processPassiveUtterance(blob) {
 
   try {
     var b64 = await blobToBase64(blob);
-    var r = await ipcRenderer.invoke('transcribe-audio', { apiKey: apiKey, audioData: b64 });
+    var r = await ipcRenderer.invoke('transcribe-audio', { apiKey: apiKey, audioData: b64, mimeType: 'audio/webm;codecs=opus' });
 
     if (r.error) {
       setStatus('Transcription error: ' + (r.error.message || 'unknown'));
@@ -742,9 +749,36 @@ function stopPassiveMode() {
 function blobToBase64(blob){return new Promise(function(resolve){var r=new FileReader();r.onloadend=function(){resolve(r.result.split(',')[1]);};r.readAsDataURL(blob);});}
 
 // ===== MANUAL MODE =====
-async function startAudioRecording(){try{var stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});audioContext=new AudioContext();analyser=audioContext.createAnalyser();audioContext.createMediaStreamSource(stream).connect(analyser);analyser.fftSize=256;mediaRecorder=new MediaRecorder(stream,{mimeType:'audio/webm'});audioChunks=[];silenceDuration=0;speechDetected=false;isProcessing=false;mediaRecorder.ondataavailable=function(e){if(e.data.size>0)audioChunks.push(e.data);};mediaRecorder.onstop=async function(){if(isProcessing)return;var blob=new Blob(audioChunks,{type:'audio/webm'});stream.getTracks().forEach(function(t){t.stop();});if(blob.size>MIN_AUDIO_SIZE)await processManualAudio(blob);else if(isListening&&!isProcessing)setTimeout(startAudioRecording,500);};mediaRecorder.start(500);monitorManualAudio();setStatus('Listening...');return true;}catch(e){setStatus('Audio error: '+e.message);return false;}}
+async function startAudioRecording(){
+  try{
+    var stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    audioContext=new AudioContext();
+    analyser=audioContext.createAnalyser();
+    audioContext.createMediaStreamSource(stream).connect(analyser);
+    analyser.fftSize=256;
+    // Pick the best supported mimeType — Whisper needs a proper container+codec
+    var mimeType='audio/webm;codecs=opus';
+    if(!MediaRecorder.isTypeSupported(mimeType)){
+      mimeType=MediaRecorder.isTypeSupported('audio/webm')?'audio/webm':'audio/ogg;codecs=opus';
+    }
+    mediaRecorder=new MediaRecorder(stream,{mimeType:mimeType,audioBitsPerSecond:96000});
+    audioChunks=[];silenceDuration=0;speechDetected=false;isProcessing=false;
+    mediaRecorder.ondataavailable=function(e){if(e.data.size>0)audioChunks.push(e.data);};
+    mediaRecorder.onstop=async function(){
+      if(isProcessing)return;
+      var blob=new Blob(audioChunks,{type:mimeType});
+      stream.getTracks().forEach(function(t){t.stop();});
+      if(blob.size>MIN_AUDIO_SIZE)await processManualAudio(blob,mimeType);
+      else if(isListening&&!isProcessing)setTimeout(startAudioRecording,500);
+    };
+    mediaRecorder.start(500);
+    monitorManualAudio();
+    setStatus('Listening...');
+    return true;
+  }catch(e){setStatus('Audio error: '+e.message);return false;}
+}
 function monitorManualAudio(){if(!isListening||isProcessing||!analyser)return;var d=new Uint8Array(analyser.frequencyBinCount);analyser.getByteFrequencyData(d);var sum=0;for(var i=0;i<d.length;i++)sum+=d[i];if(sum/d.length>30){speechDetected=true;silenceDuration=0;}else if(speechDetected){silenceDuration+=100;if(silenceDuration>=SILENCE_THRESHOLD_MS&&!isProcessing){if(mediaRecorder&&mediaRecorder.state!=='inactive')mediaRecorder.stop();return;}}if(isListening&&!isProcessing)setTimeout(monitorManualAudio,100);}
-async function processManualAudio(blob){
+async function processManualAudio(blob, mimeType){
   isProcessing=true;
   setStatus('Processing...');
   if (!apiKey) {
@@ -754,7 +788,7 @@ async function processManualAudio(blob){
     return;
   }
   var b64=await blobToBase64(blob);
-  var r=await ipcRenderer.invoke('transcribe-audio',{apiKey:apiKey,audioData:b64});
+  var r=await ipcRenderer.invoke('transcribe-audio',{apiKey:apiKey,audioData:b64,mimeType:mimeType||'audio/webm;codecs=opus'});
   if(r.error){
     setStatus('Transcription error: '+(r.error.message||'unknown'));
   } else if(r.text&&r.text.trim()){
@@ -776,7 +810,7 @@ async function toggleMic(){if(isListening){stopAllAudio();}else{var ok=await sta
 
 // ===== AI (shared) =====
 // Try primary, then fallback if primary errors. Streams tokens via onDelta.
-async function callAIStream(messages, systemPrompt, onDelta, target) {
+async function callAIStream(messages, systemPrompt, onDelta, target, maxTokens, temperature) {
   // target = 'text' or 'vision'
   var primary = target === 'vision' ? routing.visionPrimary : routing.textPrimary;
   var fallback = target === 'vision' ? routing.visionFallback : routing.textFallback;
@@ -784,7 +818,7 @@ async function callAIStream(messages, systemPrompt, onDelta, target) {
   // Try primary
   var primaryKey = getKeyForProvider(primary.provider);
   if (primaryKey && primary.model) {
-    var result = await invokeProviderStream(primary.provider, primaryKey, primary.model, messages, systemPrompt, onDelta);
+    var result = await invokeProviderStream(primary.provider, primaryKey, primary.model, messages, systemPrompt, onDelta, maxTokens, temperature);
     if (!result.error) return result;
     // Primary failed — log and try fallback if configured
     trackUsage({ provider: primary.provider, model: primary.model, usage: {}, error: result.error.message });
@@ -797,7 +831,7 @@ async function callAIStream(messages, systemPrompt, onDelta, target) {
     }
 
     setStatus('Primary failed, trying fallback (' + fallback.provider + ')...');
-    var fallbackResult = await invokeProviderStream(fallback.provider, fallbackKey, fallback.model, messages, systemPrompt, onDelta);
+    var fallbackResult = await invokeProviderStream(fallback.provider, fallbackKey, fallback.model, messages, systemPrompt, onDelta, maxTokens, temperature);
     if (fallbackResult.error) {
       trackUsage({ provider: fallback.provider, model: fallback.model, usage: {}, error: fallbackResult.error.message });
       return { error: { message: 'Both primary and fallback failed. Primary: ' + result.error.message + '. Fallback: ' + fallbackResult.error.message } };
@@ -809,14 +843,14 @@ async function callAIStream(messages, systemPrompt, onDelta, target) {
   if (fallback && fallback.provider && fallback.model) {
     var fbKey = getKeyForProvider(fallback.provider);
     if (fbKey) {
-      return await invokeProviderStream(fallback.provider, fbKey, fallback.model, messages, systemPrompt, onDelta);
+      return await invokeProviderStream(fallback.provider, fbKey, fallback.model, messages, systemPrompt, onDelta, maxTokens, temperature);
     }
   }
 
   return { error: { message: 'No API key configured for ' + primary.provider + ' (primary). Add a key in Settings.' } };
 }
 
-async function invokeProviderStream(provider, key, model, messages, systemPrompt, onDelta) {
+async function invokeProviderStream(provider, key, model, messages, systemPrompt, onDelta, maxTokens, temperature) {
   var streamId = 'stream_' + Date.now() + '_' + Math.random();
   var listener = function(e, payload) {
     if (payload && payload.streamId === streamId && payload.delta) {
@@ -827,7 +861,8 @@ async function invokeProviderStream(provider, key, model, messages, systemPrompt
   try {
     var result = await ipcRenderer.invoke('call-ai-stream', {
       provider: provider, apiKey: key, model: model,
-      messages: messages, systemPrompt: systemPrompt, streamId: streamId
+      messages: messages, systemPrompt: systemPrompt, streamId: streamId,
+      maxTokens: maxTokens, temperature: temperature
     });
     return result;
   } finally {
@@ -847,55 +882,44 @@ async function askQuestion(question){
   var dot=document.getElementById('status-dot');dot.classList.remove('listening','passive','screen-active');dot.classList.add('thinking');setStatus('Getting answer...');
   var el=document.getElementById('answer-text');el.innerHTML='<span class="thinking-dots">Thinking...</span>';
   conversationHistory.push({role:'user',content:question});saveChatHistory();
+
+  // ── Adaptive classification ──
+  var classification = classifyQuestion(question);
+  var maxTokens = AI_TOKENS[classification] || AI_TOKENS.normal;
+  var temperature = AI_TEMP[classification] || AI_TEMP.normal;
+  console.log('[Interview Assistant] Question classification:', classification, '| max_tokens:', maxTokens);
+
+  // ── Build context block from resume/job ──
+  var contextBlock = '';
+  if (resumeContext) contextBlock += '=== CANDIDATE BACKGROUND ===\n' + resumeContext;
+  if (jobContext) contextBlock += '\n=== TARGET ROLE ===\n' + jobContext;
+  if (contextBlock) {
+    contextBlock += '\n\nCRITICAL: You ARE this candidate. Answer in first person using their background. Never reveal you are an AI.';
+  } else {
+    contextBlock = 'NOTE: No background provided. Answer as a realistic 3-year experienced professional. Never reveal you are an AI.';
+  }
+
+  var systemPrompt = buildAdaptiveSystemPrompt(classification, contextBlock);
+
+  // ── Trim history: only send last 1 Q&A pair for context (saves tokens) ──
+  // For system_design / detailed we allow 2 pairs for richer context
+  var historyPairs = (classification === 'system_design' || classification === 'detailed') ? 4 : 2;
+  var historySlice = conversationHistory.slice(-historyPairs - 1); // -1 because we just pushed the current question
+
   var streamed='';
   var firstChunk=true;
   try{
-    var data=await callAIStream(conversationHistory.slice(-6),
-      buildSystemPrompt(`You are a job candidate in a live interview. You must answer the interviewer's questions in first person as a real human professional — never break character.
-
-HOW TO ANSWER:
-
-1. SPEAK LIKE A REAL PERSON
-   - Use natural conversational English with contractions (I'm, I'd, I've, that's, it's)
-   - Vary your sentence length — mix short direct statements with longer explanations
-   - Show personality: confidence, curiosity, honesty. Real people don't sound like press releases.
-   - NEVER start with filler preambles — no "Sure!", "Great question!", "Let me walk you through...", "That's a great question." Just answer the question directly.
-   - NEVER use phrases like "one must consider", "it is noteworthy", "I shall endeavor" — that's AI-speak
-   - DO NOT number your points out loud, use headings, or structure your answer with labels — just speak naturally
-
-2. STRUCTURE YOUR ANSWER NATURALLY
-   - Open with a direct response to the question (1-2 sentences)
-   - Back it up with a concrete example or story from your background (2-4 sentences)
-   - Connect it to why this matters for the role you're interviewing for (1-2 sentences)
-   - End with a brief wrap-up that shows reflection
-
-3. FOR BEHAVIORAL QUESTIONS (tell me about a time, how do you handle, etc.)
-   - Tell a genuine story with a beginning, middle, and end
-   - Include: what happened → what YOU specifically did → what you learned
-   - Be honest about challenges — perfect stories sound fake
-
-4. FOR TECHNICAL QUESTIONS
-   - Define the concept clearly in your own words first
-   - Explain with a practical example from your actual experience
-   - If you don't know something: admit it honestly and explain how you'd figure it out
-
-5. FOR "FUTURE GOALS" QUESTIONS (where do you see yourself, 3 years, 5 years, etc.)
-   - Anchor your answer in YOUR actual skills and the target role
-   - Show ambition but be realistic: growth in skills, scope, impact — not "I want to be CEO"
-   - Mention specific technologies or domains from your background you want to deepen
-
-6. FOR CODING QUESTIONS
-   - Walk through your approach first in plain language
-   - Then provide clean, working code in a code block
-
-CRITICAL: You ARE the candidate, not an AI. Never mention being an AI, assistant, or language model.
-Answer elaborately — this is a real interview, not a chatbot. Give full, thoughtful answers.`),
+    var data=await callAIStream(
+      historySlice,
+      systemPrompt,
       function(delta){
         if(firstChunk){ el.innerHTML=''; firstChunk=false; setStatus('Answering...'); }
         streamed+=delta;
         el.innerHTML=renderAnswer(streamed);
       },
-      'text'
+      'text',
+      maxTokens,
+      temperature
     );
     if(data.error){el.textContent='Error: '+data.error.message;}
     else{
@@ -915,7 +939,82 @@ function renderChatHistory(){var list=document.getElementById('chat-history-list
 function toggleChatHistory(){document.getElementById('chat-history-panel').classList.toggle('visible');document.getElementById('chat-history-btn').classList.toggle('active');}
 function clearChatHistory(){if(confirm('Clear history?')){conversationHistory=[];saveChatHistory();renderChatHistory();setStatus('Cleared');}}
 
-// ===== USAGE TRACKING =====
+// ===== ADAPTIVE QUESTION CLASSIFICATION =====
+// Token budgets — can be tuned here without touching anything else
+var AI_TOKENS = {
+  quick:            120,
+  normal:           220,
+  detailed:         350,
+  coding_explanation: 450,
+  system_design:    600
+};
+var AI_TEMP = {
+  quick:            0.25,
+  normal:           0.25,
+  detailed:         0.25,
+  coding_explanation: 0.25,
+  system_design:    0.25
+};
+
+function classifyQuestion(q) {
+  var t = (q || '').toLowerCase().trim();
+
+  // system_design: architecture, design, scalability, distributed
+  if (/\b(design|architect|scalab|distributed|microservice.*(communicat|architect)|notification system|event.driven|message queue|kafka|rabbitm|load balanc|caching strateg|circuit breaker|service mesh|api gateway|saga pattern|cqrs|event sourcing)\b/.test(t)) {
+    return 'system_design';
+  }
+
+  // system_design: troubleshooting / production issues
+  if (/\b(troubleshoot|debug.*production|production.*issue|incident|root cause|postmortem|outage|memory leak|cpu spike|thread dump|heap dump)\b/.test(t)) {
+    return 'system_design';
+  }
+
+  // coding_explanation: deep technical / JVM / GC / internals / compare concepts
+  if (/\b(garbage collect|jvm|classload|bytecode|weak ref|soft ref|phantom ref|finaliz|memory model|happens.before|volatile|synchronized|reentrant|fork.join|completable.future|reactor|webflux|hibernate.*(intern|cache|lazy|fetch)|spring.*(aop|proxy|cglib|bean lifecycle)|kubernetes.*(deploy|pod|service|ingress|configmap|secret)|docker.*(layer|network|volume)|explain.*vs|compare.*vs|difference between|how does .* work internally)\b/.test(t)) {
+    return 'coding_explanation';
+  }
+
+  // detailed: how-to technical questions with practical impl
+  if (/\b(how (do|would|did|can) you (handle|implement|use|manage|secure|optimize|configure|set up|deploy|test|write|build)|what (is your|was your|approach|strategy|pattern)|exception.*handling|transaction|caching|security|jwt|oauth|pagination|rate limit|retry|circuit|index|query optim|rest.*best|spring.*boot|ci.cd|unit test|integration test|docker.*compose|helm)\b/.test(t)) {
+    return 'detailed';
+  }
+
+  // quick: pure definition questions
+  if (/^(what is|what are|define|explain what|tell me what|can you define)\b/.test(t) && t.split(' ').length < 12) {
+    return 'quick';
+  }
+
+  // default
+  return 'normal';
+}
+
+function buildAdaptiveSystemPrompt(classification, baseContext) {
+  var lengthGuidance = {
+    quick:             'Answer in 4–6 clear lines. Be direct, no fluff.',
+    normal:            'Answer in 5–8 lines. Be clear and confident.',
+    detailed:          'Answer in 6–10 lines. Include one practical example from your experience.',
+    coding_explanation:'Give a clear explanation with how it works, a practical example, and a one-line interview-ready conclusion. Include code only if the interviewer specifically asked for code.',
+    system_design:     'Give a structured answer with key components, trade-offs, and steps. Use short bullet points only for system design or architecture. Include real-world considerations.'
+  };
+
+  var systemPrompt = `You are a real-time interview assistant for software engineering interviews.
+Answer as a confident candidate with 3 years of experience in Java, Spring Boot, Microservices, AWS, SQL, React, Angular, Docker, and Kubernetes.
+
+RULES:
+- Answer directly — never start with "Sure", "Great question", "Of course", or any filler opener.
+- Never repeat the question back.
+- Speak in first person, natural English with contractions (I've, I'd, I'm, that's).
+- Do not add bullet points unless the question is about system design or architecture.
+- Do not provide code unless the interviewer specifically asks for code.
+- Do not add headings or section labels.
+- End the answer cleanly — no "I hope that helps" or summary restatements.
+
+LENGTH GUIDANCE: ${lengthGuidance[classification] || lengthGuidance.normal}`;
+
+  // Append resume/job context if available
+  if (baseContext) systemPrompt += '\n\n' + baseContext;
+  return systemPrompt;
+}
 var usageByProvider = {};   // { gemini: { calls:0, promptTokens:0, compTokens:0, totalTokens:0 }, groq: {...}, ... }
 var usageLog = [];          // [{ time, provider, model, tokens, error }]
 var activeProvider = null;  // currently active provider name
@@ -968,7 +1067,7 @@ function renderUsagePanel() {
         statusText = 'Fallback';
       }
       html += '<tr>';
-      html += '<td class="provider-name">' + p.charAt(0).toUpperCase() + p.slice(1) + '</td>';
+      html += '<td class="provider-name">' + (p === 'digitalocean' ? 'DigitalOcean' : p.charAt(0).toUpperCase() + p.slice(1)) + '</td>';
       html += '<td>' + d.calls + '</td>';
       html += '<td class="tokens-used">' + d.totalTokens.toLocaleString() + (d.estimated ? '~' : '') + '</td>';
       html += '<td class="' + statusClass + '">' + statusText + '</td>';
@@ -1000,6 +1099,13 @@ function renderUsagePanel() {
 function toggleUsagePanel() {
   document.getElementById('usage-panel').classList.toggle('visible');
   document.getElementById('usage-btn').classList.toggle('active');
+}
+
+function clearUsageData() {
+  usageByProvider = {};
+  usageLog = [];
+  activeProvider = null;
+  renderUsagePanel();
 }
 
 // Listen for usage updates from main process

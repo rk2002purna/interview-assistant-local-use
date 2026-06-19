@@ -97,6 +97,7 @@
       <option value="groq">🟠 Groq</option>
       <option value="cerebras">🟣 Cerebras</option>
       <option value="deepseek">🔵 DeepSeek</option>
+      <option value="digitalocean">🌊 DigitalOcean</option>
     </select>
     <br/>
     <label>Primary Model</label>
@@ -110,6 +111,7 @@
       <option value="groq">🟠 Groq</option>
       <option value="cerebras">🟣 Cerebras</option>
       <option value="deepseek">🔵 DeepSeek</option>
+      <option value="digitalocean">🌊 DigitalOcean</option>
     </select>
     <br/>
     <label>Fallback Model</label>
@@ -174,6 +176,15 @@
     <input type="password" id="cerebras-api-key" placeholder="csk-..." />
     <p class="hint">
       Get a free key at <a href="#" onclick="openExternal('https://cloud.cerebras.ai')">cloud.cerebras.ai</a> — text-only (no vision).
+    </p>
+  </div>
+
+  <div class="section" id="digitalocean-section">
+    <h2>🌊 DigitalOcean Serverless Inference API Key</h2>
+    <label>DigitalOcean Model Access Key (stored locally on your machine only)</label>
+    <input type="password" id="digitalocean-api-key" placeholder="dop_v1_..." />
+    <p class="hint">
+      Get your key at <a href="#" onclick="openExternal('https://cloud.digitalocean.com/gen-ai')">cloud.digitalocean.com/gen-ai</a> — text-only (no vision).
     </p>
   </div>
 
@@ -247,7 +258,17 @@
     },
     cerebras: {
       text: [
-        { id: 'gpt-oss-120b', label: '⚡ gpt-oss-120b — Cerebras (ultra-fast)' }
+        { id: 'gpt-oss-120b', label: '⚡ gpt-oss-120b — Cerebras (fastest, recommended)' },
+        { id: 'zai-glm-4.7', label: '🧠 zai-glm-4.7 — Cerebras GLM' }
+      ],
+      vision: []
+    },
+    digitalocean: {
+      text: [
+        { id: 'openai-gpt-oss-120b', label: '⚡ openai-gpt-oss-120b (recommended)' },
+        { id: 'meta-llama/llama-4-scout-17b', label: 'llama-4-scout-17b' },
+        { id: 'meta-llama/llama-4-maverick-17b', label: 'llama-4-maverick-17b' },
+        { id: 'mistral-nemo', label: 'mistral-nemo' }
       ],
       vision: []
     }
@@ -298,6 +319,7 @@
     if (config.geminiApiKey) document.getElementById('gemini-api-key').value = config.geminiApiKey;
     if (config.deepseekApiKey) document.getElementById('deepseek-api-key').value = config.deepseekApiKey;
     if (config.cerebrasApiKey) document.getElementById('cerebras-api-key').value = config.cerebrasApiKey;
+    if (config.digitaloceanApiKey) document.getElementById('digitalocean-api-key').value = config.digitaloceanApiKey;
 
     // Other config
     if (config.resumeContext) document.getElementById('resume-context').value = config.resumeContext;
@@ -306,9 +328,9 @@
     // Routing config (with sensible defaults)
     const routing = config.routing || {};
     const textPrimary = routing.textPrimary || { provider: 'gemini', model: 'gemini-flash-latest' };
-    const textFallback = routing.textFallback || { provider: 'groq', model: 'llama-3.3-70b-versatile' };
+    const textFallback = routing.textFallback || { provider: '', model: '' };
     const visionPrimary = routing.visionPrimary || { provider: 'gemini', model: 'gemini-flash-latest' };
-    const visionFallback = routing.visionFallback || { provider: 'groq', model: 'meta-llama/llama-4-scout-17b-16e-instruct' };
+    const visionFallback = routing.visionFallback || { provider: '', model: '' };
 
     document.getElementById('text-primary-provider').value = textPrimary.provider;
     updateModelDropdown('text-primary');
@@ -352,6 +374,7 @@
       geminiApiKey: document.getElementById('gemini-api-key').value.trim(),
       deepseekApiKey: document.getElementById('deepseek-api-key').value.trim(),
       cerebrasApiKey: document.getElementById('cerebras-api-key').value.trim(),
+      digitaloceanApiKey: document.getElementById('digitalocean-api-key').value.trim(),
       resumeContext: document.getElementById('resume-context').value.trim(),
       jobContext: document.getElementById('job-context').value.trim(),
       routing: routing

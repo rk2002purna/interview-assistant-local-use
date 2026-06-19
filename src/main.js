@@ -328,10 +328,11 @@ function messagesToGeminiContents(messages) {
   return contents;
 }
 
-// Gemini 2.5+ flash models use "thinking" tokens that eat into maxOutputTokens.
-// Disable thinking on flash so the full budget goes to the actual answer.
-function buildGeminiGenerationConfig(model) {
-  const cfg = { temperature: 0.7, maxOutputTokens: 1500 };
+function buildGeminiGenerationConfig(model, maxOutputTokens, temperature) {
+  const cfg = {
+    temperature: (temperature !== undefined && temperature !== null) ? temperature : 0.25,
+    maxOutputTokens: maxOutputTokens || 220
+  };
   const m = (model || '').toLowerCase();
   // Flash variants benefit from disabled thinking. Pro keeps thinking enabled.
   if (m.includes('flash')) {
@@ -414,14 +415,17 @@ ipcMain.handle('call-gemini-api', async (event, { apiKey, model, messages, syste
 });
 
 // Streaming AI handler - emits tokens to renderer as they arrive
-ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messages, systemPrompt, streamId }) => {
+ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messages, systemPrompt, streamId, maxTokens, temperature }) => {
   const sender = event.sender;
+  // Use caller-supplied values; fall back to safe defaults
+  const resolvedMaxTokens = maxTokens || 220;
+  const resolvedTemp = (temperature !== undefined && temperature !== null) ? temperature : 0.25;
 
   // Gemini has its own streaming format
   if (provider === 'gemini') {
     const requestBody = {
       contents: messagesToGeminiContents(messages),
-      generationConfig: buildGeminiGenerationConfig(model)
+      generationConfig: buildGeminiGenerationConfig(model, resolvedMaxTokens, resolvedTemp)
     };
     if (systemPrompt) {
       requestBody.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -557,35 +561,42 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
 
   const requestBody = {
     model: model,
-    max_tokens: 1500,
-    temperature: 0.7,
+    max_tokens: resolvedMaxTokens,
+    temperature: resolvedTemp,
     messages: allMessages,
-    stream: true,
-    stream_options: { include_usage: true }
+    stream: true
   };
+
+  // stream_options (include_usage) is supported by Groq and DeepSeek but NOT Cerebras or DigitalOcean
+  if (provider !== 'cerebras' && provider !== 'digitalocean') {
+    requestBody.stream_options = { include_usage: true };
+  }
 
   const body = JSON.stringify(requestBody);
   const bodyBuffer = Buffer.from(body);
 
-  // OpenAI-compatible providers: Groq, DeepSeek, Cerebras
-  let hostname, path;
+  // OpenAI-compatible providers: Groq, DeepSeek, Cerebras, DigitalOcean
+  let hostname, apiPath;
   if (provider === 'deepseek') {
     hostname = 'api.deepseek.com';
-    path = '/chat/completions';
+    apiPath = '/chat/completions';
   } else if (provider === 'cerebras') {
     hostname = 'api.cerebras.ai';
-    path = '/v1/chat/completions';
+    apiPath = '/v1/chat/completions';
+  } else if (provider === 'digitalocean') {
+    hostname = 'inference.do-ai.run';
+    apiPath = '/v1/chat/completions';
   } else {
     // Default to Groq
     hostname = 'api.groq.com';
-    path = '/openai/v1/chat/completions';
+    apiPath = '/openai/v1/chat/completions';
   }
 
   return new Promise((resolve) => {
     const options = {
       hostname: hostname,
       port: 443,
-      path: path,
+      path: apiPath,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -636,16 +647,21 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
       });
 
       res.on('end', () => {
-        // If HTTP error or we got nothing, try to parse the raw body as a plain JSON error
-        if (!errorMsg && !fullText && res.statusCode && res.statusCode >= 400) {
+        // Always treat HTTP 4xx/5xx as an error — even if partial text was streamed.
+        // This ensures rate-limit (429), auth (401), etc. trigger the fallback in the renderer.
+        if (res.statusCode && res.statusCode >= 400) {
+          let parsedErr = 'HTTP ' + res.statusCode;
           try {
             const errJson = JSON.parse(rawBody);
-            if (errJson.error && errJson.error.message) {
-              errorMsg = errJson.error.message;
-            }
+            if (errJson.error && errJson.error.message) parsedErr = errJson.error.message;
           } catch(e) {
-            errorMsg = 'HTTP ' + res.statusCode + ': ' + rawBody.substring(0, 200);
+            parsedErr = 'HTTP ' + res.statusCode + ': ' + rawBody.substring(0, 200);
           }
+          sender.send('ai-usage-update', {
+            provider: provider, model: model, usage: {}, error: parsedErr
+          });
+          resolve({ error: { message: parsedErr } });
+          return;
         }
 
         if (errorMsg) {
@@ -654,11 +670,18 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messag
           });
           resolve({ error: { message: errorMsg } });
         } else {
-          if (streamUsage) {
-            sender.send('ai-usage-update', {
-              provider: provider, model: model, usage: streamUsage
-            });
-          }
+          // Always emit a usage update so every provider shows in the Usage panel.
+          // Providers that support stream_options return real token counts;
+          // others (DigitalOcean, Cerebras) get a character-based estimate.
+          const usageToReport = streamUsage || {
+            prompt_tokens: 0,
+            completion_tokens: Math.ceil(fullText.length / 4),
+            total_tokens: Math.ceil(fullText.length / 4),
+            estimated: true
+          };
+          sender.send('ai-usage-update', {
+            provider: provider, model: model, usage: usageToReport
+          });
           const result = { content: [{ text: fullText }] };
           if (streamUsage) result.usage = streamUsage;
           resolve(result);
@@ -745,8 +768,17 @@ ipcMain.handle('capture-screen-frame', async () => {
   }
 });
 
-ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData }) => {
-  const tempPath = path.join(os.tmpdir(), 'interview-audio-' + Date.now() + '.webm');
+ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData, mimeType }) => {
+  // Derive file extension and content-type from the actual mimeType the recorder used.
+  // Groq Whisper is strict: the declared type must match the actual container.
+  const mime = mimeType || 'audio/webm;codecs=opus';
+  let ext = 'webm';
+  let contentType = 'audio/webm';
+  if (mime.startsWith('audio/ogg')) { ext = 'ogg'; contentType = 'audio/ogg'; }
+  else if (mime.startsWith('audio/mp4')) { ext = 'mp4'; contentType = 'audio/mp4'; }
+  else if (mime.startsWith('audio/webm')) { ext = 'webm'; contentType = 'audio/webm'; }
+
+  const tempPath = path.join(os.tmpdir(), 'interview-audio-' + Date.now() + '.' + ext);
 
   try {
     const audioBuffer = Buffer.from(audioData, 'base64');
@@ -764,7 +796,7 @@ ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData }) => {
         '-s', 'https://api.groq.com/openai/v1/audio/transcriptions',
         '-X', 'POST',
         '-H', `Authorization: Bearer ${apiKey}`,
-        '-F', `file=@${tempPath};type=audio/webm`,
+        '-F', `file=@${tempPath};type=${contentType}`,
         '-F', 'model=whisper-large-v3',
         '-F', 'response_format=json',
         '-F', 'language=en',
