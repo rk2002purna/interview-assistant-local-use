@@ -66,6 +66,21 @@
     .chat-q { font-size: 11px; color: #63b3ed; font-weight: 600; margin-bottom: 3px; }
     .chat-a { font-size: 11px; color: #a0aec0; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
     .chat-empty { padding: 20px; text-align: center; color: #4a5568; font-size: 11px; }
+    .chat-item { cursor: pointer; transition: background 0.15s; }
+    .chat-item:hover { background: rgba(99,179,237,0.08); }
+    .chat-item.active-memory { background: rgba(72,187,120,0.1); border-left: 2px solid #48bb78; }
+
+    /* Memory viewer banner */
+    #memory-view-banner {
+      display: none; align-items: center; justify-content: space-between;
+      padding: 6px 14px; background: rgba(72,187,120,0.12);
+      border-bottom: 1px solid rgba(72,187,120,0.25); flex-shrink: 0;
+    }
+    #memory-view-banner.visible { display: flex; }
+    #memory-view-banner .banner-label { font-size: 10px; color: #68d391; font-weight: 600; }
+    #memory-view-banner .banner-q { font-size: 10px; color: #a0aec0; margin-left: 6px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #memory-back-btn { background: rgba(72,187,120,0.2); border: 1px solid rgba(72,187,120,0.4); color: #68d391; padding: 3px 10px; border-radius: 10px; cursor: pointer; font-size: 10px; font-weight: 600; white-space: nowrap; margin-left: 8px; }
+    #memory-back-btn:hover { background: rgba(72,187,120,0.35); }
 
     /* Usage tracking panel */
     #usage-btn { background: rgba(72,187,120,0.1); border: 1px solid rgba(72,187,120,0.2); color: #68d391; padding: 3px 10px; border-radius: 12px; cursor: pointer; font-size: 10px; font-weight: 600; }
@@ -124,6 +139,11 @@
     </div>
     <button id="clear-captures-btn" onclick="clearCaptures()" style="margin-top:6px; width:100%; padding:6px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1); color:#a0aec0; border-radius:6px; cursor:pointer; font-size:11px;">🗑️ Clear captures</button>
   </div>
+  <div id="memory-view-banner">
+    <span class="banner-label">📖 Memory</span>
+    <span class="banner-q" id="memory-banner-q"></span>
+    <button id="memory-back-btn" onclick="exitMemoryView()">↩ Back</button>
+  </div>
   <div id="chat-history-panel"><div id="chat-history-list"></div></div>
   <div id="usage-panel">
     <div id="usage-stats"></div>
@@ -177,10 +197,104 @@ let passiveLevelHistory = [], passiveSpeaking = false, passiveSilenceFrames = 0,
 let screenCaptureInterval = null, screenLastText = '', screenProcessing = false, screenStitcherBuffer = '', screenStitcherTimer = null, screenProcessedQuestions = [], screenCaptureIntervalMs = 4000;
 const SILENCE_THRESHOLD_MS = 2500, MIN_AUDIO_SIZE = 4096, SPEECH_VOLUME_THRESHOLD = 25;
 
+// ===== PERSISTENT MEMORY =====
+// Separate from conversationHistory — stores every Q+A pair with metadata
+let memoryItems = [];          // [{ id, question, response, timestamp, conversationId }]
+let viewingMemoryId = null;    // null = live view; string id = frozen memory snapshot
+let liveAnswerText = '';       // saves current live answer when user dips into memory
+let activeConversationId = 'conv_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+
+function generateMemoryId() {
+  return 'mem_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+}
+
+function loadMemoryItems() {
+  try {
+    var s = localStorage.getItem('interviewMemoryItems');
+    if (s) memoryItems = JSON.parse(s);
+  } catch(e) { memoryItems = []; }
+}
+
+function saveMemoryItems() {
+  try {
+    // Keep last 200 items to avoid unbounded growth
+    if (memoryItems.length > 200) memoryItems = memoryItems.slice(-200);
+    localStorage.setItem('interviewMemoryItems', JSON.stringify(memoryItems));
+  } catch(e) {}
+}
+
+/**
+ * Add a question+response pair to persistent memory.
+ * Called after every successful AI response (manual, passive, screen).
+ */
+function addToMemory(question, response) {
+  if (!question || !response) return;
+  var item = {
+    id: generateMemoryId(),
+    question: question,
+    response: response,
+    timestamp: new Date().toISOString(),
+    conversationId: activeConversationId
+  };
+  memoryItems.push(item);
+  saveMemoryItems();
+  renderChatHistory();
+}
+
+/**
+ * Show a saved memory item in the answer panel (read-only snapshot).
+ * Does NOT modify conversationHistory.
+ */
+function viewMemoryItem(id) {
+  var item = memoryItems.find(function(m){ return m.id === id; });
+  if (!item) return;
+
+  // Save live answer before entering memory view (only once)
+  if (!viewingMemoryId) {
+    liveAnswerText = document.getElementById('answer-text').innerHTML;
+  }
+
+  viewingMemoryId = id;
+
+  // Update answer panel
+  var el = document.getElementById('answer-text');
+  el.innerHTML = renderAnswer(item.response);
+
+  // Show banner
+  var banner = document.getElementById('memory-view-banner');
+  banner.classList.add('visible');
+  document.getElementById('memory-banner-q').textContent = item.question;
+
+  // Highlight active item in list
+  renderChatHistory();
+
+  // Close the memory panel after a brief delay so user can see the answer
+  setTimeout(function() {
+    var panel = document.getElementById('chat-history-panel');
+    if (panel.classList.contains('visible')) {
+      panel.classList.remove('visible');
+      document.getElementById('chat-history-btn').classList.remove('active');
+    }
+  }, 200);
+}
+
+/**
+ * Return to the live conversation view from a memory snapshot.
+ */
+function exitMemoryView() {
+  viewingMemoryId = null;
+  var el = document.getElementById('answer-text');
+  el.innerHTML = liveAnswerText || 'Select a mode to get started.';
+  document.getElementById('memory-view-banner').classList.remove('visible');
+  document.getElementById('memory-banner-q').textContent = '';
+  renderChatHistory();
+}
+
 // ===== INIT =====
 async function init() {
   try { appPlatform = await ipcRenderer.invoke('get-platform'); } catch(e) {}
   await reloadConfig();
+  loadMemoryItems();
   loadChatHistory();
 }
 
@@ -392,7 +506,7 @@ async function analyzeScreenNow() {
       function(delta) {
         if (firstChunk) { answerEl.innerHTML = ''; firstChunk = false; }
         streamed += delta;
-        answerEl.innerHTML = renderAnswer(streamed);
+        if (!viewingMemoryId) answerEl.innerHTML = renderAnswer(streamed);
       },
       'vision',
       600,   // vision always gets full token budget — screen may contain complex problems
@@ -406,7 +520,11 @@ async function analyzeScreenNow() {
       conversationHistory.push({ role: 'user', content: '[Screen analysis - ' + count + ' screenshot(s)]' });
       conversationHistory.push({ role: 'assistant', content: ans });
       saveChatHistory(); renderChatHistory();
-      answerEl.innerHTML = renderAnswer(ans);
+      // Save screen analysis to persistent memory
+      var screenQuestion = '[Screen analysis - ' + count + ' screenshot(s)]';
+      addToMemory(screenQuestion, ans);
+      liveAnswerText = renderAnswer(ans);
+      if (!viewingMemoryId) answerEl.innerHTML = liveAnswerText;
       setStatus('Answer ready - capture more or clear for next question');
     }
   } catch (e) {
@@ -879,6 +997,8 @@ async function askQuestion(question){
   if(!getActiveApiKey() && !getKeyForProvider((routing.textFallback||{}).provider)){
     document.getElementById('answer-text').textContent='Add API key in Settings';return;
   }
+  // If user is viewing a memory snapshot, exit it so the new answer shows live
+  if(viewingMemoryId) exitMemoryView();
   var dot=document.getElementById('status-dot');dot.classList.remove('listening','passive','screen-active');dot.classList.add('thinking');setStatus('Getting answer...');
   var el=document.getElementById('answer-text');el.innerHTML='<span class="thinking-dots">Thinking...</span>';
   conversationHistory.push({role:'user',content:question});saveChatHistory();
@@ -915,29 +1035,79 @@ async function askQuestion(question){
       function(delta){
         if(firstChunk){ el.innerHTML=''; firstChunk=false; setStatus('Answering...'); }
         streamed+=delta;
-        el.innerHTML=renderAnswer(streamed);
+        // Only update live display if not currently viewing a memory snapshot
+        if(!viewingMemoryId) el.innerHTML=renderAnswer(streamed);
       },
       'text',
       maxTokens,
       temperature
     );
-    if(data.error){el.textContent='Error: '+data.error.message;}
-    else{
-      var ans=data.content[0].text || streamed;
-      conversationHistory.push({role:'assistant',content:ans});saveChatHistory();renderChatHistory();
-      el.innerHTML=renderAnswer(ans);
+    if(data.error){
+      if(!viewingMemoryId) el.textContent='Error: '+data.error.message;
+    } else {
+      var ans=(data.content && data.content[0] && data.content[0].text) || streamed;
+      conversationHistory.push({role:'assistant',content:ans});saveChatHistory();
+      // Save to persistent memory (question was already pushed before the API call)
+      addToMemory(question, ans);
+      // Update live answer cache and display (only if not in memory view)
+      liveAnswerText = renderAnswer(ans);
+      if(!viewingMemoryId) el.innerHTML=liveAnswerText;
+      renderChatHistory();
     }
-  }catch(e){el.textContent='Network error: '+e.message;}
+  }catch(e){ if(!viewingMemoryId) el.textContent='Network error: '+e.message; }
   dot.classList.remove('thinking');restoreStatusDot();setStatus(currentMode==='passive'?'Passive listening...':currentMode==='screen'?'Screen monitoring...':(isListening?'Listening...':'Ready'));
 }
 function restoreStatusDot(){var dot=document.getElementById('status-dot');if(currentMode==='passive')dot.classList.add('passive');else if(currentMode==='screen')dot.classList.add('screen-active');else if(isListening)dot.classList.add('listening');}
 
-// ===== CHAT =====
-function loadChatHistory(){try{var s=localStorage.getItem('interviewChatHistory');if(s){conversationHistory=JSON.parse(s);renderChatHistory();}}catch(e){}}
+// ===== CHAT / MEMORY =====
+function loadChatHistory(){try{var s=localStorage.getItem('interviewChatHistory');if(s){conversationHistory=JSON.parse(s);}}catch(e){}}
 function saveChatHistory(){try{localStorage.setItem('interviewChatHistory',JSON.stringify(conversationHistory));}catch(e){}}
-function renderChatHistory(){var list=document.getElementById('chat-history-list');var u=conversationHistory.filter(function(m){return m.role==='user';});if(!u.length){list.innerHTML='<div class="chat-empty">No history</div>';return;}var a=conversationHistory.filter(function(m){return m.role==='assistant';});list.innerHTML=u.map(function(m,i){return '<div class="chat-item"><div class="chat-q">Q: '+escapeHtml(m.content.substring(0,60))+'</div><div class="chat-a">A: '+escapeHtml((a[i]?a[i].content:'').substring(0,100))+'</div></div>';}).join('');}
-function toggleChatHistory(){document.getElementById('chat-history-panel').classList.toggle('visible');document.getElementById('chat-history-btn').classList.toggle('active');}
-function clearChatHistory(){if(confirm('Clear history?')){conversationHistory=[];saveChatHistory();renderChatHistory();setStatus('Cleared');}}
+
+function renderChatHistory() {
+  var list = document.getElementById('chat-history-list');
+  if (!memoryItems.length) {
+    list.innerHTML = '<div class="chat-empty">No memory yet — ask a question to get started</div>';
+    return;
+  }
+
+  // Show newest first
+  var items = memoryItems.slice().reverse();
+  var html = items.map(function(item) {
+    var isActive = viewingMemoryId === item.id;
+    var ts = '';
+    try {
+      var d = new Date(item.timestamp);
+      ts = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch(e) {}
+    return '<div class="chat-item' + (isActive ? ' active-memory' : '') + '" onclick="viewMemoryItem(\'' + item.id + '\')" title="Click to view this answer">' +
+      '<div class="chat-q">Q: ' + escapeHtml((item.question || '').substring(0, 70)) + '</div>' +
+      '<div class="chat-a">A: ' + escapeHtml((item.response || '').substring(0, 100)) + '</div>' +
+      '<div style="font-size:9px;color:#4a5568;margin-top:2px;">' + ts + '</div>' +
+      '</div>';
+  }).join('');
+
+  list.innerHTML = html;
+}
+
+function toggleChatHistory(){
+  document.getElementById('chat-history-panel').classList.toggle('visible');
+  document.getElementById('chat-history-btn').classList.toggle('active');
+}
+
+function clearChatHistory(){
+  if(confirm('Clear all memory? This cannot be undone.')) {
+    conversationHistory = [];
+    memoryItems = [];
+    saveChatHistory();
+    saveMemoryItems();
+    viewingMemoryId = null;
+    liveAnswerText = '';
+    document.getElementById('memory-view-banner').classList.remove('visible');
+    document.getElementById('memory-banner-q').textContent = '';
+    renderChatHistory();
+    setStatus('Memory cleared');
+  }
+}
 
 // ===== ADAPTIVE QUESTION CLASSIFICATION =====
 // Token budgets — can be tuned here without touching anything else
