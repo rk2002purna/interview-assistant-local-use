@@ -8,6 +8,7 @@ const { readActiveWindowText } = require('./screen-reader');
 
 let mainWindow;
 let settingsWindow;
+let knowledgeBaseWindow;
 let miniMode = false;
 let savedBounds = null;
 
@@ -63,11 +64,30 @@ function createSettingsWindow() {
   settingsWindow.on('closed', () => settingsWindow = null);
 }
 
-app.whenReady().then(() => { createMainWindow(); });
+function createKnowledgeBaseWindow() {
+  if (knowledgeBaseWindow) { knowledgeBaseWindow.focus(); return; }
+  knowledgeBaseWindow = new BrowserWindow({
+    width: 700,
+    height: 600,
+    title: 'Knowledge Base',
+    webPreferences: { nodeIntegration: true, contextIsolation: false }
+  });
+  knowledgeBaseWindow.loadFile(path.join(__dirname, 'renderer', 'knowledge.html'));
+  // Open DevTools for debugging
+  knowledgeBaseWindow.webContents.openDevTools();
+  knowledgeBaseWindow.on('closed', () => knowledgeBaseWindow = null);
+}
+
+app.whenReady().then(() => { 
+  createMainWindow(); 
+  // Register Knowledge Base IPC handlers
+  require('./main/knowledgeIpc');
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow(); });
 
 ipcMain.on('open-settings', () => createSettingsWindow());
+ipcMain.on('open-knowledge-base', () => createKnowledgeBaseWindow());
 ipcMain.on('minimize-window', () => {
   if (!mainWindow) return;
   if (!miniMode) {

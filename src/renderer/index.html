@@ -28,6 +28,18 @@
     #mic-btn { margin-left: auto; background: rgba(99,179,237,0.15); border: 1px solid rgba(99,179,237,0.3); color: #63b3ed; padding: 4px 12px; border-radius: 20px; cursor: pointer; font-size: 11px; font-weight: 600; transition: all 0.2s; }
     #mic-btn:hover { background: rgba(99,179,237,0.25); }
     #mic-btn.active { background: rgba(252,92,101,0.2); border-color: rgba(252,92,101,0.4); color: #fc5c65; }
+
+    /* Passive mode: Auto/Manual sub-toggle + Start/Stop capture button */
+    .passive-subtoggle { display: none; align-items: center; gap: 6px; }
+    .passive-subtoggle.visible { display: flex; }
+    .passive-sub-btn { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); color: #a0aec0; padding: 3px 10px; border-radius: 12px; cursor: pointer; font-size: 10px; font-weight: 600; transition: all 0.2s; }
+    .passive-sub-btn:hover { background: rgba(255,255,255,0.08); }
+    .passive-sub-btn.active { background: rgba(159,122,234,0.25); border-color: rgba(159,122,234,0.5); color: #b794f4; }
+    .passive-sub-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #passive-capture-btn { display: none; margin-left: auto; background: rgba(99,179,237,0.15); border: 1px solid rgba(99,179,237,0.3); color: #63b3ed; padding: 4px 12px; border-radius: 20px; cursor: pointer; font-size: 11px; font-weight: 600; transition: all 0.2s; }
+    #passive-capture-btn.visible { display: block; }
+    #passive-capture-btn:hover { background: rgba(99,179,237,0.25); }
+    #passive-capture-btn.active { background: rgba(252,92,101,0.2); border-color: rgba(252,92,101,0.4); color: #fc5c65; }
     @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
     .mode-indicator { display: none; padding: 8px 14px; flex-shrink: 0; }
     .mode-indicator.visible { display: block; }
@@ -159,6 +171,11 @@
   <div id="statusbar">
     <div class="status-dot" id="status-dot"></div>
     <span id="status-text">Ready</span>
+    <div class="passive-subtoggle" id="passive-subtoggle">
+      <button class="passive-sub-btn active" id="passive-auto-btn" onclick="setPassiveSubMode('auto')">Auto</button>
+      <button class="passive-sub-btn" id="passive-manual-btn" onclick="setPassiveSubMode('manual')">Manual</button>
+    </div>
+    <button id="passive-capture-btn" onclick="toggleManualCapture()">&#9654; Start</button>
     <button id="chat-history-btn" onclick="toggleChatHistory()">&#128172; Memory</button>
     <button id="clear-history-btn" onclick="clearChatHistory()">Clear</button>
     <button id="usage-btn" onclick="toggleUsagePanel()">&#128200; Usage</button>
@@ -170,6 +187,7 @@
     <button class="mode-btn" id="screen-mode-btn" onclick="switchMode('screen')">&#128421; Screen Analyzer</button>
   </div>
   <div id="titlebar"><div class="win-btns">
+    <button class="win-btn btn-set" onclick="openKnowledgeBase()" title="Knowledge Base" style="background: #a78bfa; color: #2d1b69;">&#128218;</button>
     <button class="win-btn btn-set" onclick="openSettings()" title="Settings">&#9881;</button>
     <button class="win-btn btn-min" onclick="minimize()" title="Minimize">&minus;</button>
     <button class="win-btn btn-close" onclick="closeApp()" title="Close">&#10005;</button>
@@ -194,6 +212,9 @@ var appPlatform = 'win32'; // updated on init via IPC
 let mediaRecorder = null, audioContext = null, analyser = null, audioChunks = [], isProcessing = false, silenceDuration = 0, speechDetected = false;
 let passiveStream = null, passiveRecorder = null, passiveAudioContext = null, passiveAnalyser = null, passiveChunks = [], passiveProcessing = false;
 let passiveLevelHistory = [], passiveSpeaking = false, passiveSilenceFrames = 0, passiveSpeechFrames = 0, passiveBaseline = 0, passiveMonitorTimer = null, passiveActiveTranscriptions = 0;
+// Manual-passive (Start/Stop) sub-mode — user marks where a question begins/ends.
+// Auto = VAD-driven (today's flow). Manual = continuous record until user clicks Stop.
+let passiveSubMode = 'auto', passiveManualRecording = false, passiveManualChunks = [], passiveManualRecorder = null, passiveManualUserStop = false;
 let screenCaptureInterval = null, screenLastText = '', screenProcessing = false, screenStitcherBuffer = '', screenStitcherTimer = null, screenProcessedQuestions = [], screenCaptureIntervalMs = 4000;
 const SILENCE_THRESHOLD_MS = 2500, MIN_AUDIO_SIZE = 4096, SPEECH_VOLUME_THRESHOLD = 25;
 
@@ -371,6 +392,13 @@ function switchMode(mode) {
     app.classList.add('passive-active');
     document.getElementById('passive-mode-btn').classList.add('active');
     document.getElementById('mic-btn').style.display = 'none';
+    // Default to Auto sub-mode; show the Auto/Manual toggle (capture button stays
+    // hidden until the user picks Manual).
+    passiveSubMode = 'auto';
+    document.getElementById('passive-auto-btn').classList.add('active');
+    document.getElementById('passive-manual-btn').classList.remove('active');
+    document.getElementById('passive-subtoggle').classList.add('visible');
+    document.getElementById('passive-capture-btn').classList.remove('visible');
     setStatus('Starting passive audio capture...');
     startPassiveMode();
   } else if (mode === 'screen') {
@@ -659,6 +687,103 @@ async function startPassiveFallback() {
     }
   } catch(e) { setStatus('Fallback failed: ' + e.message); }
 }
+
+// ===== Shared device acquisition for passive sub-modes =====
+// Mirrors the same device-selection order as the Auto path above
+// (desktopCapturer loopback -> virtual audio -> mic), sets up the analyser
+// and the .passive status dot, but does NOT start any recorder. The caller
+// decides whether to run the VAD recorder (Auto) or the manual one (Manual).
+async function acquirePassiveStream() {
+  if (!appPlatform || appPlatform === 'win32') {
+    try { appPlatform = await ipcRenderer.invoke('get-platform'); } catch(e) {}
+  }
+
+  // macOS: skip desktopCapturer (unsupported) — try virtual audio, then mic
+  if (appPlatform === 'darwin') {
+    var lb = null;
+    try {
+      var devices = await navigator.mediaDevices.enumerateDevices();
+      var audioInputs = devices.filter(function(d){return d.kind==='audioinput';});
+      lb = audioInputs.find(function(d){var l=(d.label||'').toLowerCase();return l.includes('blackhole');})
+        || audioInputs.find(function(d){var l=(d.label||'').toLowerCase();return l.includes('loopback')||l.includes('soundflower');})
+        || audioInputs.find(function(d){var l=(d.label||'').toLowerCase();return l.includes('aggregate')||l.includes('multi-output');});
+    } catch(e) {}
+    if (lb) {
+      try {
+        passiveStream = await navigator.mediaDevices.getUserMedia({audio:{deviceId:{exact:lb.deviceId},echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+        setupPassiveAnalyser(passiveStream);
+        document.getElementById('status-dot').classList.add('passive');
+        setStatus('Passive (Manual) via ' + lb.label);
+        return passiveStream;
+      } catch(e) {}
+    }
+    // fall through to mic
+    try {
+      passiveStream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:true}});
+      setupPassiveAnalyser(passiveStream);
+      document.getElementById('status-dot').classList.add('passive');
+      setStatus('Passive (Manual, mic) - listening to your microphone');
+      return passiveStream;
+    } catch(e) { setStatus('Microphone access denied: ' + e.message); return null; }
+  }
+
+  // Windows / Linux: try desktopCapturer (system audio loopback)
+  try {
+    var sources = await ipcRenderer.invoke('get-desktop-sources');
+    var src = sources.find(function(s){return s.name==='Entire Screen'||s.name==='Entire screen';}) || sources.find(function(s){return s.id.startsWith('screen:');}) || sources[0];
+    if (src) {
+      var cap = await navigator.mediaDevices.getUserMedia({ audio:{mandatory:{chromeMediaSource:'desktop'}}, video:{mandatory:{chromeMediaSource:'desktop',chromeMediaSourceId:src.id,minWidth:1,maxWidth:1,minHeight:1,maxHeight:1}} });
+      cap.getVideoTracks().forEach(function(t){t.stop();});
+      var at = cap.getAudioTracks();
+      if (at.length) {
+        passiveStream = new MediaStream(at);
+        setupPassiveAnalyser(passiveStream);
+        document.getElementById('status-dot').classList.add('passive');
+        setStatus('Passive (Manual) - press Start when the question begins');
+        return passiveStream;
+      }
+    }
+  } catch(e) {}
+
+  // Fallback: virtual audio device, then mic
+  try {
+    var devices2 = await navigator.mediaDevices.enumerateDevices();
+    var inputs2 = devices2.filter(function(d){return d.kind==='audioinput';});
+    var lb2 = inputs2.find(function(d){var l=(d.label||'').toLowerCase(); if(l.includes('teams')||l.includes('zoom'))return false; return l.includes('blackhole')||l.includes('stereo mix')||l.includes('cable')||l.includes('voicemeeter')||l.includes('loopback')||l.includes('soundflower');});
+    if (lb2) {
+      passiveStream = await navigator.mediaDevices.getUserMedia({audio:{deviceId:{exact:lb2.deviceId},echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+      setupPassiveAnalyser(passiveStream);
+      document.getElementById('status-dot').classList.add('passive');
+      setStatus('Passive (Manual) via ' + lb2.label);
+      return passiveStream;
+    }
+  } catch(e) {}
+
+  // Last resort: microphone
+  try {
+    passiveStream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:true}});
+    setupPassiveAnalyser(passiveStream);
+    document.getElementById('status-dot').classList.add('passive');
+    setStatus('Passive (Manual, mic) - listening to your microphone');
+    return passiveStream;
+  } catch(e) { setStatus('Passive (Manual) error: ' + e.message); return null; }
+}
+
+// Wire a stream into the passive analyser (shared by Auto + Manual)
+function setupPassiveAnalyser(stream) {
+  passiveAudioContext = new AudioContext();
+  passiveAnalyser = passiveAudioContext.createAnalyser();
+  passiveAudioContext.createMediaStreamSource(stream).connect(passiveAnalyser);
+  passiveAnalyser.fftSize = 256;
+}
+
+// Manual-passive entry: acquire device (same selection as Auto) then capture.
+// Used the first time the user clicks Start in Manual mode.
+async function startPassiveModeManual() {
+  var s = await acquirePassiveStream();
+  if (s) startManualCaptureRecording(s);
+}
+
 // ===== Continuous passive recording with sliding-window VAD =====
 // Strategy: keep recording continuously. Use volume monitoring to detect speech
 // boundaries. When utterance ends, we stop the current recorder (so the WebM
@@ -683,20 +808,23 @@ function startPassiveRecording(stream) {
   };
 
   passiveRecorder.onstop = function() {
-    // Build complete WebM blob from all chunks gathered so far
-    if (passiveChunks.length > 0 && passiveSpeaking) {
+    // Build complete WebM blob from all chunks gathered so far.
+    // Only Auto sub-mode should transcribe/restart here. In Manual sub-mode the
+    // user controls capture via the manual recorder, so this is a clean stop.
+    if (passiveSubMode === 'auto' && passiveChunks.length > 0 && passiveSpeaking) {
       var blob = new Blob(passiveChunks, { type: 'audio/webm' });
       passiveSpeaking = false;
-      // Require ~600ms of audio minimum (filters out coughs, single syllables)
-      if (blob.size > 4000) {
+      // Require enough audio for a valid WebM + something Whisper can decode.
+      // Too-small blobs cause "could not process file - is it a valid media file?".
+      if (blob.size > 8000) {
         processPassiveUtterance(blob);
       }
     }
     passiveChunks = [];
-    // Restart recorder for next utterance
-    if (currentMode === 'passive' && passiveStream) {
+    // Restart recorder for next utterance — AUTO sub-mode only.
+    if (currentMode === 'passive' && passiveSubMode === 'auto' && passiveStream) {
       passiveRestartTimer = setTimeout(function() {
-        if (currentMode === 'passive' && passiveStream) {
+        if (currentMode === 'passive' && passiveSubMode === 'auto' && passiveStream) {
           startPassiveRecording(passiveStream);
         }
       }, 100);
@@ -708,7 +836,8 @@ function startPassiveRecording(stream) {
 }
 
 function monitorPassiveAudio() {
-  if (currentMode !== 'passive' || !passiveAnalyser) return;
+  // VAD loop is AUTO sub-mode only — never run it while Manual capture is active.
+  if (currentMode !== 'passive' || passiveSubMode !== 'auto' || !passiveAnalyser) return;
 
   var d = new Uint8Array(passiveAnalyser.frequencyBinCount);
   passiveAnalyser.getByteFrequencyData(d);
@@ -854,6 +983,12 @@ function stopPassiveMode() {
   if (passiveRecorder && passiveRecorder.state !== 'inactive') {
     try { passiveRecorder.stop(); } catch(e) {}
   }
+  // Tear down any in-flight manual capture too
+  passiveManualRecording = false;
+  if (passiveManualRecorder && passiveManualRecorder.state !== 'inactive') {
+    try { passiveManualRecorder.stop(); } catch(e) {}
+  }
+  passiveManualChunks = [];
   if (passiveStream) { passiveStream.getTracks().forEach(function(t){t.stop();}); passiveStream = null; }
   if (passiveAudioContext) { try { passiveAudioContext.close(); } catch(e){} passiveAudioContext = null; }
   passiveAnalyser = null;
@@ -863,8 +998,162 @@ function stopPassiveMode() {
   passiveChunks = [];
   passiveLevelHistory = [];
   document.getElementById('status-dot').classList.remove('passive');
+
+  // Reset passive sub-mode UI so re-entering passive starts clean (Auto by default)
+  passiveSubMode = 'auto';
+  var subtoggle = document.getElementById('passive-subtoggle');
+  if (subtoggle) subtoggle.classList.remove('visible');
+  var captureBtn = document.getElementById('passive-capture-btn');
+  if (captureBtn) { captureBtn.classList.remove('visible'); captureBtn.classList.remove('active'); captureBtn.innerHTML = '\u25B6 Start'; }
+  var autoBtn = document.getElementById('passive-auto-btn');
+  var manBtn = document.getElementById('passive-manual-btn');
+  if (autoBtn) autoBtn.classList.add('active');
+  if (manBtn) manBtn.classList.remove('active');
 }
 function blobToBase64(blob){return new Promise(function(resolve){var r=new FileReader();r.onloadend=function(){resolve(r.result.split(',')[1]);};r.readAsDataURL(blob);});}
+
+// ===== MANUAL-PASSIVE: continuous Start/Stop capture =====
+// Unlike the VAD path, the user marks where the question begins and ends.
+// The whole span is recorded continuously (no silence cutoff, no restart),
+// then transcribed and answered in one shot.
+
+function startManualCaptureRecording(stream) {
+  passiveManualChunks = [];
+  passiveManualRecording = true;
+  // Marks that the next onstop is a genuine user Stop (vs a discard on mode switch).
+  passiveManualUserStop = false;
+  passiveManualRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 96000 });
+
+  passiveManualRecorder.ondataavailable = function(e) {
+    if (e.data.size > 0) passiveManualChunks.push(e.data);
+  };
+
+  passiveManualRecorder.onstop = function() {
+    // Transcribe ONLY on an explicit user Stop — never on a discard (mode switch /
+    // leaving passive), which would send partial/empty audio and error out.
+    if (passiveManualUserStop && passiveManualChunks.length > 0) {
+      var blob = new Blob(passiveManualChunks, { type: 'audio/webm' });
+      processManualCapture(blob);
+    }
+    passiveManualChunks = [];
+    passiveManualUserStop = false;
+    passiveManualRecorder = null;
+  };
+
+  passiveManualRecorder.start(250);
+
+  // Update the capture button to its Stop state
+  var btn = document.getElementById('passive-capture-btn');
+  btn.innerHTML = '\u23F9 Stop';
+  btn.classList.add('active');
+  setStatus('\uD83C\uDFA4 Recording question... click Stop when it ends');
+}
+
+function stopManualCapture() {
+  if (!passiveManualRecording) return;
+  passiveManualRecording = false;
+  // Mark this as a genuine user Stop so onstop transcribes the captured span.
+  passiveManualUserStop = true;
+  // Flip the button back to Start immediately; transcription runs in onstop
+  var btn = document.getElementById('passive-capture-btn');
+  btn.innerHTML = '\u25B6 Start';
+  btn.classList.remove('active');
+  if (passiveManualRecorder && passiveManualRecorder.state !== 'inactive') {
+    try { passiveManualRecorder.stop(); } catch(e) {}
+  }
+  setStatus('\uD83C\uDF99 Transcribing question...');
+}
+
+async function processManualCapture(blob) {
+  // Skip the shouldAnswerUtterance sanity checks: the user explicitly marked
+  // this span as a question, so always transcribe + answer. Only guard against
+  // blobs too small to be valid media (would error out at Whisper).
+  if (blob.size < 8000) {
+    setStatus('Capture too short — hold Start longer and try again');
+    return;
+  }
+  try {
+    var b64 = await blobToBase64(blob);
+    var r = await ipcRenderer.invoke('transcribe-audio', { apiKey: apiKey, audioData: b64, mimeType: 'audio/webm;codecs=opus' });
+
+    if (r.error) {
+      setStatus('Transcription error: ' + (r.error.message || 'unknown'));
+      return;
+    }
+
+    if (r.text && r.text.trim()) {
+      var t = r.text.trim();
+      document.getElementById('transcript-text').textContent = t;
+      document.getElementById('transcript-box').classList.add('visible');
+      await askQuestion(t);
+      setTimeout(function() {
+        document.getElementById('transcript-box').classList.remove('visible');
+      }, 10000);
+    } else {
+      setStatus('No speech detected');
+    }
+  } catch (e) {
+    setStatus('Manual capture error: ' + e.message);
+  }
+}
+
+// ===== Passive sub-mode switching (Auto / Manual) =====
+function setPassiveSubMode(mode) {
+  if (currentMode !== 'passive') return;
+  passiveSubMode = mode;
+
+  document.getElementById('passive-auto-btn').classList.toggle('active', mode === 'auto');
+  document.getElementById('passive-manual-btn').classList.toggle('active', mode === 'manual');
+
+  var captureBtn = document.getElementById('passive-capture-btn');
+
+  if (mode === 'manual') {
+    // Leave the Auto VAD recorder but stop its VAD loop so it won't fire answers.
+    // Keep passiveStream + analyser alive — stopPassiveMode() would tear them down.
+    if (passiveMonitorTimer) { clearTimeout(passiveMonitorTimer); passiveMonitorTimer = null; }
+    if (passiveRestartTimer) { clearTimeout(passiveRestartTimer); passiveRestartTimer = null; }
+    if (passiveRecorder && passiveRecorder.state !== 'inactive') {
+      try { passiveRecorder.stop(); } catch(e) {}
+    }
+    passiveSpeaking = false;
+
+    captureBtn.classList.add('visible');
+    captureBtn.disabled = false;
+    captureBtn.innerHTML = '\u25B6 Start';
+    captureBtn.classList.remove('active');
+    setStatus('Manual mode — click Start when the question begins, Stop when it ends');
+  } else {
+    // Back to Auto: discard any in-flight manual capture, then run the VAD.
+    if (passiveManualRecording) {
+      passiveManualRecording = false;
+      if (passiveManualRecorder && passiveManualRecorder.state !== 'inactive') {
+        try { passiveManualRecorder.stop(); } catch(e) {}
+      }
+      passiveManualChunks = [];
+    }
+    captureBtn.classList.remove('visible');
+    captureBtn.innerHTML = '\u25B6 Start';
+    captureBtn.classList.remove('active');
+
+    if (passiveStream) {
+      startPassiveRecording(passiveStream);  // resumes the VAD loop
+      setStatus('Passive listening active');
+    } else {
+      setStatus('Passive listening active');
+    }
+  }
+}
+
+function toggleManualCapture() {
+  if (currentMode !== 'passive' || passiveSubMode !== 'manual') return;
+  if (passiveManualRecording) {
+    stopManualCapture();
+  } else {
+    // Acquire the device if not already held (e.g. first Start after entering Manual).
+    if (passiveStream) startManualCaptureRecording(passiveStream);
+    else startPassiveModeManual();
+  }
+}
 
 // ===== MANUAL MODE =====
 async function startAudioRecording(){
@@ -1019,7 +1308,32 @@ async function askQuestion(question){
     contextBlock = 'NOTE: No background provided. Answer as a realistic 3-year experienced professional. Never reveal you are an AI.';
   }
 
-  var systemPrompt = buildAdaptiveSystemPrompt(classification, contextBlock);
+  // ── RAG: Retrieve Guidewire knowledge if available ──
+  var ragContext = '';
+  try {
+    if (window.knowledgeBase && window.knowledgeBase.ragSearch) {
+      var ragResult = await window.knowledgeBase.ragSearch(question);
+      if (ragResult && ragResult.context && !ragResult.error) {
+        console.log('[Knowledge] RAG context retrieved:', ragResult.sources.length, 'chunks');
+        ragContext = '\n\n=== GUIDEWIRE TECHNICAL KNOWLEDGE ===\n' + ragResult.context + 
+                     '\n\nCRITICAL INSTRUCTIONS FOR USING THIS KNOWLEDGE:\n' +
+                     '1. INTERNALIZE this information - explain it naturally as if you learned it from experience\n' +
+                     '2. NEVER cite sources explicitly (no "according to...", "mentioned in...", "as stated in...")\n' +
+                     '3. NEVER mention page numbers, document names, or PDFs\n' +
+                     '4. Speak confidently in first person: "I know that...", "The way it works is...", "What I\'ve seen is..."\n' +
+                     '5. If you use technical details from above, present them as YOUR knowledge, not quoted material\n' +
+                     '6. Be conversational and natural - imagine explaining to a colleague over coffee\n' +
+                     '7. Use phrases like: "From what I understand...", "Typically...", "The approach is...", "You\'d want to..."\n' +
+                     '8. If the knowledge above doesn\'t fully answer the question, supplement with general knowledge naturally\n' +
+                     '9. SOUND HUMAN - vary sentence structure, use contractions, be direct but friendly\n' +
+                     '10. This is an INTERVIEW - sound experienced and knowledgeable, not like you\'re reading documentation';
+      }
+    }
+  } catch (e) {
+    console.log('[Knowledge] RAG search failed (non-fatal):', e.message);
+  }
+
+  var systemPrompt = buildAdaptiveSystemPrompt(classification, contextBlock + ragContext);
 
   // ── Trim history: only send last 1 Q&A pair for context (saves tokens) ──
   // For system_design / detailed we allow 2 pairs for richer context
@@ -1290,6 +1604,7 @@ function renderAnswer(text){return text.replace(/```(\w*)\n?([\s\S]*?)```/g,func
 function escapeHtml(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function setStatus(msg){document.getElementById('status-text').textContent=msg;}
 function openSettings(){ipcRenderer.send('open-settings');}
+function openKnowledgeBase(){ipcRenderer.send('open-knowledge-base');}
 function minimize(){
   document.body.classList.add('mini-mode'); // hide immediately, don't wait for IPC round-trip
   ipcRenderer.send('minimize-window');

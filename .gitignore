@@ -4,3 +4,6 @@ build/
 out/
 *.exe
 .env
+
+# Knowledge Base dev seed folder (don't commit PDFs)
+knowledge-base-seed/*.pdf

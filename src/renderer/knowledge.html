@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Knowledge Base — Interview Assistant</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0d1117;
+      color: #e2e8f0;
+      padding: 24px;
+    }
+    h1 { font-size: 18px; color: #63b3ed; margin-bottom: 4px; }
+    .sub { font-size: 12px; color: #4a5568; margin-bottom: 20px; }
+
+    .section {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(99,179,237,0.15);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .section h2 { font-size: 13px; color: #a0aec0; margin-bottom: 12px; font-weight: 600; }
+
+    button {
+      background: linear-gradient(135deg, #4299e1, #3182ce);
+      border: none;
+      color: white;
+      padding: 9px 18px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: opacity 0.2s;
+    }
+    button:hover:not(:disabled) { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.secondary {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #a0aec0;
+    }
+    button.danger {
+      background: linear-gradient(135deg, #e53e3e, #c53030);
+    }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+    /* Status + progress */
+    #status-line {
+      font-size: 13px;
+      color: #9ae6b4;
+      padding: 10px 12px;
+      background: rgba(72,187,120,0.08);
+      border: 1px solid rgba(72,187,120,0.2);
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+    #status-line.error {
+      color: #feb2b2;
+      background: rgba(229,62,62,0.08);
+      border-color: rgba(229,62,62,0.25);
+    }
+    #status-line.busy {
+      color: #fbd38d;
+      background: rgba(237,137,54,0.08);
+      border-color: rgba(237,137,54,0.25);
+    }
+    .progress-wrap {
+      display: none;
+      margin: 10px 0 4px 0;
+    }
+    .progress-bar {
+      height: 8px;
+      background: rgba(255,255,255,0.08);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #4299e1, #63b3ed);
+      transition: width 0.3s ease;
+    }
+    .progress-label { font-size: 11px; color: #a0aec0; margin-top: 5px; }
+
+    /* PDF list */
+    #pdf-list { list-style: none; }
+    .pdf-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 10px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 7px;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+    .pdf-name { color: #e2e8f0; word-break: break-all; }
+    .pdf-meta { color: #4a5568; font-size: 11px; white-space: nowrap; margin-left: 12px; }
+    .empty-hint { font-size: 12px; color: #4a5568; padding: 8px 0; }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 6px;
+    }
+    .stat {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 8px;
+      padding: 10px;
+      text-align: center;
+    }
+    .stat-num { font-size: 20px; font-weight: 700; color: #63b3ed; }
+    .stat-label { font-size: 10px; color: #4a5568; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .hint { font-size: 11px; color: #4a5568; margin-top: 8px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>📚 Guidewire Knowledge Base</h1>
+  <p class="sub">Upload PDFs, build a local search index, and the assistant will ground its Guidewire answers in your documents.</p>
+
+  <div id="status-line">Loading status…</div>
+
+  <div class="progress-wrap" id="progress-wrap">
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+    <div class="progress-label" id="progress-label"></div>
+  </div>
+
+  <div class="section">
+    <h2>📄 Source PDFs</h2>
+    <div class="row">
+      <button id="upload-btn" class="action-btn" onclick="uploadPdfs()">⬆ Upload / Select PDFs</button>
+      <span class="hint" style="margin:0;">Only <code>.pdf</code> files. Multiple selection supported. Copies into local app storage.</span>
+    </div>
+    <ul id="pdf-list" style="margin-top:12px;">
+      <li class="empty-hint">No PDFs uploaded yet.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <h2>🧠 Index</h2>
+    <div class="row">
+      <button id="rebuild-btn" class="action-btn" onclick="rebuildIndex()">🔨 Rebuild Index</button>
+      <button id="delete-btn" class="action-btn danger" onclick="deleteKnowledgeBase()">🗑 Delete Knowledge Base</button>
+    </div>
+    <div class="stats-grid">
+      <div class="stat"><div class="stat-num" id="stat-pdfs">0</div><div class="stat-label">PDFs</div></div>
+      <div class="stat"><div class="stat-num" id="stat-chunks">0</div><div class="stat-label">Chunks</div></div>
+      <div class="stat"><div class="stat-num" id="stat-model">—</div><div class="stat-label">Embedding</div></div>
+      <div class="stat"><div class="stat-num" id="stat-when" style="font-size:13px;">—</div><div class="stat-label">Last Indexed</div></div>
+    </div>
+    <p class="hint" id="kb-path"></p>
+  </div>
+
+  <div class="row">
+    <button class="secondary" onclick="window.close()">Close</button>
+  </div>
+
+<script>
+  const { ipcRenderer } = require('electron');
+  let isBusy = false;
+  let statusPollTimer = null;
+
+  function setBusy(busy) {
+    isBusy = busy;
+    const btns = document.querySelectorAll('.action-btn');
+    btns.forEach(b => b.disabled = busy);
+  }
+
+  function toast(msg) {
+    document.getElementById('status-line').textContent = msg;
+    setTimeout(() => refreshStatus(), 3000);
+  }
+
+  function humanSize(bytes) {
+    if (!bytes) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+    return (bytes/(1024*1024)).toFixed(1) + ' MB';
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleString(); } catch (e) { return iso; }
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+
+  async function refreshPdfList() {
+    const list = await ipcRenderer.invoke('knowledge:list-pdfs');
+    const ul = document.getElementById('pdf-list');
+    if (!list.length) {
+      ul.innerHTML = '<li class="empty-hint">No PDFs uploaded yet.</li>';
+    } else {
+      ul.innerHTML = list.map(p =>
+        '<li class="pdf-item">' +
+          '<span class="pdf-name">📄 ' + escapeHtml(p.fileName) + '</span>' +
+          '<span class="pdf-meta">' + humanSize(p.sizeBytes) + ' · ' + fmtDate(p.addedAt) + '</span>' +
+        '</li>'
+      ).join('');
+    }
+    return list.length;
+  }
+
+  async function refreshStats() {
+    try {
+      const stats = await ipcRenderer.invoke('knowledge:stats');
+      document.getElementById('stat-pdfs').textContent = stats.pdfCount || 0;
+      document.getElementById('stat-chunks').textContent = stats.chunkCount || 0;
+      document.getElementById('stat-model').textContent = stats.embeddingModel
+        ? stats.embeddingModel.replace('local:', 'local ').replace('digitalocean:', 'DO ') : '—';
+      document.getElementById('stat-when').textContent = stats.lastIndexedAt ? new Date(stats.lastIndexedAt).toLocaleDateString() : '—';
+    } catch (e) { /* ignore */ }
+  }
+
+  function applyStatus(payload) {
+    const line = document.getElementById('status-line');
+    const p = payload.progress || {};
+    const d = payload.durable || {};
+    line.classList.remove('error', 'busy');
+    line.textContent = payload.description || 'Ready';
+    if (p.state === 'indexing') {
+      line.classList.add('busy');
+      document.getElementById('progress-wrap').style.display = 'block';
+    } else {
+      document.getElementById('progress-wrap').style.display = 'none';
+    }
+    if (p.state === 'error' || d.lastError) {
+      line.classList.add('error');
+    }
+    // progress bar
+    if (p.state === 'indexing') {
+      let pct = 0;
+      if (p.totalChunks > 0 && p.currentChunk > 0) pct = Math.round(100 * p.currentChunk / p.totalChunks);
+      else if (p.totalPdfs > 0 && p.currentPdf > 0) pct = Math.round(100 * p.currentPdf / p.totalPdfs);
+      document.getElementById('progress-fill').style.width = pct + '%';
+      document.getElementById('progress-label').textContent = payload.description || '';
+    }
+  }
+
+  async function refreshStatus() {
+    try {
+      const payload = await ipcRenderer.invoke('knowledge:status');
+      applyStatus(payload);
+      // If the backend reports indexing but the UI isn't in busy mode, sync it.
+      if (payload.progress && payload.progress.state === 'indexing' && !isBusy) {
+        setBusy(true);
+        startStatusPolling();
+      } else if (payload.progress && payload.progress.state !== 'indexing' && isBusy) {
+        // Indexing finished while we were polling — settle the UI.
+        stopStatusPolling();
+        setBusy(false);
+        await refreshStats();
+        await refreshPdfList();
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  function startStatusPolling() {
+    if (statusPollTimer) return;
+    statusPollTimer = setInterval(refreshStatus, 1000);
+  }
+  function stopStatusPolling() {
+    if (statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
+  }
+
+  // ---- Actions ----
+  async function uploadPdfs() {
+    setBusy(true);
+    try {
+      const res = await ipcRenderer.invoke('knowledge:select-pdfs');
+      if (res.cancelled) { toast('No PDFs selected.'); }
+      else if (res.success) {
+        const n = (res.copied || []).length;
+        const skipped = (res.skipped || []).length;
+        toast(n ? ('Copied ' + n + ' PDF' + (n === 1 ? '' : 's') + (skipped ? ' (' + skipped + ' skipped)' : '') + '.') : 'No new PDFs copied.');
+        await refreshPdfList();
+        await refreshStatus();
+      } else {
+        toast('Upload failed: ' + (res.error || 'unknown error'));
+      }
+    } catch (e) {
+      toast('Upload error: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rebuildIndex() {
+    setBusy(true);
+    document.getElementById('status-line').classList.add('busy');
+    document.getElementById('status-line').textContent = 'Starting rebuild…';
+    document.getElementById('progress-fill').style.width = '2%';
+    document.getElementById('progress-wrap').style.display = 'block';
+    startStatusPolling();
+    try {
+      const res = await ipcRenderer.invoke('knowledge:rebuild-index');
+      stopStatusPolling();
+      if (res.success) {
+        toast(res.message || 'Index built.');
+      } else {
+        toast('Rebuild failed: ' + (res.error || res.message || 'unknown error'));
+      }
+      await refreshStats();
+      await refreshStatus();
+    } catch (e) {
+      stopStatusPolling();
+      toast('Rebuild error: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteKnowledgeBase() {
+    if (!confirm('Delete the entire knowledge base?\n\nThis removes all copied PDFs and the vector index. This cannot be undone.')) return;
+    setBusy(true);
+    try {
+      const res = await ipcRenderer.invoke('knowledge:delete');
+      toast(res.success ? 'Knowledge base deleted.' : ('Delete failed: ' + (res.error || 'unknown')));
+      await refreshPdfList();
+      await refreshStats();
+      await refreshStatus();
+    } catch (e) {
+      toast('Delete error: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ---- Init ----
+  async function init() {
+    try {
+      console.log('[KB] Initializing Knowledge Base window...');
+      await refreshPdfList();
+      await refreshStats();
+      await refreshStatus();
+      console.log('[KB] Initialization complete');
+    } catch (e) {
+      console.error('[KB] Initialization failed:', e);
+      document.getElementById('status-line').textContent = 'Error: ' + e.message;
+      document.getElementById('status-line').classList.add('error');
+    }
+  }
+
+  init();
+</script>
+</body>
+</html>
