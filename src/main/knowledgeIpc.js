@@ -71,6 +71,7 @@ function registerKnowledgeIpc() {
   if (_registered) return;
   _registered = true;
 
+  console.log('[Knowledge] Registering IPC handlers...');
   paths.ensureDirectories();
 
   // ---------------------------------------------------------------
@@ -198,6 +199,8 @@ function registerKnowledgeIpc() {
     const result = await ragAnswer.retrieveContext(question, { apiKey });
     return result;
   });
+
+  console.log('[Knowledge] ✓ All 7 IPC handlers registered successfully');
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +277,3 @@ function loadDigitaloceanKey() {
 }
 
 module.exports = { registerKnowledgeIpc };
-
-// Auto-register on require
-registerKnowledgeIpc();
-console.log('[Knowledge] IPC handlers registered');

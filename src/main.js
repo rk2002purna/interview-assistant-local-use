@@ -81,7 +81,8 @@ function createKnowledgeBaseWindow() {
 app.whenReady().then(() => { 
   createMainWindow(); 
   // Register Knowledge Base IPC handlers
-  require('./main/knowledgeIpc');
+  const { registerKnowledgeIpc } = require('./main/knowledgeIpc');
+  registerKnowledgeIpc();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow(); });
