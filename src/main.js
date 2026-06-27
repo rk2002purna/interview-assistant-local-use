@@ -81,8 +81,19 @@ function createKnowledgeBaseWindow() {
 app.whenReady().then(() => { 
   createMainWindow(); 
   // Register Knowledge Base IPC handlers
-  const { registerKnowledgeIpc } = require('./main/knowledgeIpc');
-  registerKnowledgeIpc();
+  try {
+    console.log('[Knowledge] Attempting to load knowledgeIpc module...');
+    const knowledgeIpc = require('./main/knowledgeIpc');
+    console.log('[Knowledge] Module loaded, keys:', Object.keys(knowledgeIpc));
+    if (knowledgeIpc && knowledgeIpc.registerKnowledgeIpc) {
+      knowledgeIpc.registerKnowledgeIpc();
+    } else {
+      console.error('[Knowledge] ERROR: registerKnowledgeIpc function not found in module');
+    }
+  } catch (e) {
+    console.error('[Knowledge] FATAL ERROR loading knowledgeIpc:', e.message);
+    console.error('[Knowledge] Stack:', e.stack);
+  }
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow(); });

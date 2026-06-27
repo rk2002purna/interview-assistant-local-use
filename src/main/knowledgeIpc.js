@@ -23,11 +23,26 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
-const paths = require('../services/knowledge/knowledgePaths');
-const statusService = require('../services/knowledge/knowledgeStatusService');
-const indexing = require('../services/knowledge/ragIndexingService');
-const ragAnswer = require('../services/knowledge/ragAnswerService');
-const vectorStore = require('../services/knowledge/vectorStoreService');
+let paths, statusService, indexing, ragAnswer, vectorStore;
+
+try {
+  console.log('[Knowledge] Loading knowledge service modules...');
+  paths = require('../services/knowledge/knowledgePaths');
+  statusService = require('../services/knowledge/knowledgeStatusService');
+  indexing = require('../services/knowledge/ragIndexingService');
+  ragAnswer = require('../services/knowledge/ragAnswerService');
+  vectorStore = require('../services/knowledge/vectorStoreService');
+  console.log('[Knowledge] All service modules loaded successfully');
+} catch (e) {
+  console.error('[Knowledge] FATAL: Failed to load service modules:', e.message);
+  console.error('[Knowledge] Stack:', e.stack);
+  // Set dummy modules so the app doesn't crash
+  paths = { getSourcePdfDir: () => '', ensureDirectories: () => {} };
+  statusService = { readStatus: () => ({}), describeStatus: () => 'Error', getProgress: () => ({}), resetStatus: () => {}, resetProgress: () => {} };
+  indexing = { rebuildIndex: async () => ({ success: false, error: 'Service load failed' }) };
+  ragAnswer = { retrieveContext: async () => ({ error: 'Service load failed' }) };
+  vectorStore = { clearVectorStore: async () => {}, getIndexStats: async () => ({}) };
+}
 
 // ── Seed PDFs from dev folder (optional, dev-only convenience) ──
 // If you place PDFs in src/knowledge-base-seed/ during development,
