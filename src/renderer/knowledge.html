@@ -273,20 +273,30 @@
 
   // ---- Actions ----
   async function uploadPdfs() {
+    console.log('[KB] Upload PDFs button clicked');
     setBusy(true);
     try {
+      console.log('[KB] Invoking knowledge:select-pdfs...');
       const res = await ipcRenderer.invoke('knowledge:select-pdfs');
-      if (res.cancelled) { toast('No PDFs selected.'); }
+      console.log('[KB] Select PDFs result:', JSON.stringify(res));
+      
+      if (res.cancelled) { 
+        console.log('[KB] User cancelled selection');
+        toast('No PDFs selected.'); 
+      }
       else if (res.success) {
         const n = (res.copied || []).length;
         const skipped = (res.skipped || []).length;
+        console.log('[KB] Success: copied=' + n + ', skipped=' + skipped);
         toast(n ? ('Copied ' + n + ' PDF' + (n === 1 ? '' : 's') + (skipped ? ' (' + skipped + ' skipped)' : '') + '.') : 'No new PDFs copied.');
         await refreshPdfList();
         await refreshStatus();
       } else {
+        console.error('[KB] Upload failed:', res.error);
         toast('Upload failed: ' + (res.error || 'unknown error'));
       }
     } catch (e) {
+      console.error('[KB] Upload exception:', e);
       toast('Upload error: ' + e.message);
     } finally {
       setBusy(false);

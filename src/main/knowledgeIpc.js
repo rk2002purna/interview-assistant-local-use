@@ -93,6 +93,7 @@ function registerKnowledgeIpc() {
   // Feature 2: Select & copy PDFs into local app storage.
   // ---------------------------------------------------------------
   ipcMain.handle('knowledge:select-pdfs', async (event) => {
+    console.log('[Knowledge] select-pdfs handler called');
     const win = BrowserWindow.fromWebContents(event.sender);
     const opts = {
       title: 'Select PDFs for the Guidewire Knowledge Base',
@@ -101,9 +102,12 @@ function registerKnowledgeIpc() {
     };
     let result;
     try {
+      console.log('[Knowledge] Showing file dialog...');
       result = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+      console.log('[Knowledge] Dialog result:', { canceled: result.canceled, fileCount: result.filePaths ? result.filePaths.length : 0 });
     } catch (e) {
       console.error('[Knowledge] showOpenDialog error:', e.message);
+      console.error('[Knowledge] Stack:', e.stack);
       return { success: false, error: e.message, copied: [] };
     }
 
@@ -114,22 +118,34 @@ function registerKnowledgeIpc() {
     }
 
     console.log('[Knowledge] PDFs selected: %d file(s)', result.filePaths.length);
-    paths.ensureDirectories();
-    const destDir = paths.getSourcePdfDir();
-    const copied = [];
-    const skipped = [];
+    console.log('[Knowledge] Selected paths:', result.filePaths);
+    
+    try {
+      paths.ensureDirectories();
+      const destDir = paths.getSourcePdfDir();
+      console.log('[Knowledge] Destination directory:', destDir);
+      
+      const copied = [];
+      const skipped = [];
 
-    for (const src of result.filePaths) {
-      try {
-        const info = await copyPdfSafely(src, destDir);
-        copied.push(info);
-      } catch (e) {
-        console.error('[Knowledge] Failed to copy %s: %s', src, e.message);
-        skipped.push({ originalPath: src, error: e.message });
+      for (const src of result.filePaths) {
+        try {
+          console.log('[Knowledge] Copying:', src);
+          const info = await copyPdfSafely(src, destDir);
+          console.log('[Knowledge] Copied successfully:', info.fileName);
+          copied.push(info);
+        } catch (e) {
+          console.error('[Knowledge] Failed to copy %s: %s', src, e.message);
+          skipped.push({ originalPath: src, error: e.message });
+        }
       }
+      console.log('[Knowledge] Copied %d PDF(s), skipped %d.', copied.length, skipped.length);
+      return { success: true, cancelled: false, copied, skipped };
+    } catch (e) {
+      console.error('[Knowledge] FATAL: Copy operation failed:', e.message);
+      console.error('[Knowledge] Stack:', e.stack);
+      return { success: false, error: e.message, copied: [] };
     }
-    console.log('[Knowledge] Copied %d PDF(s), skipped %d.', copied.length, skipped.length);
-    return { success: true, cancelled: false, copied, skipped };
   });
 
   // ---------------------------------------------------------------
