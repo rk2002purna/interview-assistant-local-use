@@ -13,7 +13,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm ci
+      - run: npm ci --include=optional
+      - name: Verify native modules installed
+        run: |
+          echo "Checking for @lancedb native module..."
+          dir node_modules\@lancedb\lancedb-win32-x64-msvc
+          echo "Checking for @xenova/transformers..."
+          dir node_modules\@xenova\transformers
+          echo "Checking for pdfjs-dist..."
+          dir node_modules\pdfjs-dist
       - run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -29,7 +37,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm ci
+      - run: npm ci --include=optional
       - run: npm run build:mac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
