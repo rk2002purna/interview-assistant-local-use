@@ -21,18 +21,27 @@
  */
 
 const fs = require('fs');
-const lancedb = require('@lancedb/lancedb');
 const paths = require('./knowledgePaths');
 
 const TABLE = 'chunks';
 
 let _db = null;
 let _table = null;
+let _lancedb = null;
+
+/** Lazy-load the native LanceDB module only when actually needed. */
+function getLanceDb() {
+  if (!_lancedb) {
+    _lancedb = require('@lancedb/lancedb');
+  }
+  return _lancedb;
+}
 
 /** Open (or create) the LanceDB connection. Safe to call repeatedly. */
 async function _connect() {
   paths.ensureDirectories();
   if (!_db) {
+    const lancedb = getLanceDb();
     _db = await lancedb.connect(paths.getVectorDbDir());
   }
   return _db;

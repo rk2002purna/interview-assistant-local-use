@@ -23,26 +23,37 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
+// Load each module INDEPENDENTLY so a failure in one (e.g. native LanceDB)
+// does not disable the others. PDF upload/listing must work even if the
+// vector DB native module fails to load in the packaged .exe.
 let paths, statusService, indexing, ragAnswer, vectorStore;
 
-try {
-  console.log('[Knowledge] Loading knowledge service modules...');
-  paths = require('../services/knowledge/knowledgePaths');
-  statusService = require('../services/knowledge/knowledgeStatusService');
-  indexing = require('../services/knowledge/ragIndexingService');
-  ragAnswer = require('../services/knowledge/ragAnswerService');
-  vectorStore = require('../services/knowledge/vectorStoreService');
-  console.log('[Knowledge] All service modules loaded successfully');
-} catch (e) {
-  console.error('[Knowledge] FATAL: Failed to load service modules:', e.message);
-  console.error('[Knowledge] Stack:', e.stack);
-  // Set dummy modules so the app doesn't crash
-  paths = { getSourcePdfDir: () => '', ensureDirectories: () => {} };
-  statusService = { readStatus: () => ({}), describeStatus: () => 'Error', getProgress: () => ({}), resetStatus: () => {}, resetProgress: () => {} };
-  indexing = { rebuildIndex: async () => ({ success: false, error: 'Service load failed' }) };
-  ragAnswer = { retrieveContext: async () => ({ error: 'Service load failed' }) };
-  vectorStore = { clearVectorStore: async () => {}, getIndexStats: async () => ({}) };
+function safeRequire(label, loader, fallback) {
+  try {
+    const mod = loader();
+    console.log('[Knowledge] Loaded module: ' + label);
+    return mod;
+  } catch (e) {
+    console.error('[Knowledge] FAILED to load module ' + label + ': ' + e.message);
+    console.error('[Knowledge] Stack: ' + e.stack);
+    return fallback;
+  }
 }
+
+paths = safeRequire('knowledgePaths', () => require('../services/knowledge/knowledgePaths'),
+  { getSourcePdfDir: () => '', getVectorDbDir: () => '', getStatusPath: () => '', ensureDirectories: () => {} });
+
+statusService = safeRequire('knowledgeStatusService', () => require('../services/knowledge/knowledgeStatusService'),
+  { readStatus: () => ({}), writeStatus: () => {}, describeStatus: () => 'Status unavailable', getProgress: () => ({}), resetStatus: () => {}, resetProgress: () => {} });
+
+indexing = safeRequire('ragIndexingService', () => require('../services/knowledge/ragIndexingService'),
+  { rebuildIndex: async () => ({ success: false, error: 'Indexing service failed to load (native module issue)' }) });
+
+ragAnswer = safeRequire('ragAnswerService', () => require('../services/knowledge/ragAnswerService'),
+  { retrieveContext: async () => ({ error: 'RAG service unavailable' }) });
+
+vectorStore = safeRequire('vectorStoreService', () => require('../services/knowledge/vectorStoreService'),
+  { clearVectorStore: async () => {}, getIndexStats: async () => ({ indexed: false, chunkCount: 0 }) });
 
 // ── Seed PDFs from dev folder (optional, dev-only convenience) ──
 // If you place PDFs in src/knowledge-base-seed/ during development,
