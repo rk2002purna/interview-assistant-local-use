@@ -20,10 +20,8 @@ jobs:
           dir node_modules\@lancedb\lancedb-win32-x64-msvc
           echo "Checking for apache-arrow..."
           dir node_modules\apache-arrow
-          echo "Checking for @xenova/transformers..."
-          dir node_modules\@xenova\transformers
-          echo "Checking for pdfjs-dist..."
-          dir node_modules\pdfjs-dist
+          echo "Checking for sharp nested semver..."
+          dir node_modules\sharp
       - run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -31,3 +29,21 @@ jobs:
         with:
           name: windows-installer
           path: dist/*.exe
+
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci --include=optional
+      - run: npm run build:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-installer
+          path: |
+            dist/*.dmg
+            dist/*.zip
