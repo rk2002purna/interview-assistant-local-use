@@ -74,13 +74,18 @@ function getStatusPath() {
   return path.join(getKnowledgeBaseRoot(), 'status.json');
 }
 
+/** Directory where the local embedding model is cached (transformers.js). */
+function getModelsDir() {
+  return path.join(getKnowledgeBaseRoot(), 'models');
+}
+
 /**
  * Ensure all required knowledge-base directories exist.
  * Safe to call repeatedly. Returns the root dir.
  */
 function ensureDirectories() {
   const root = getKnowledgeBaseRoot();
-  for (const dir of [root, getSourcePdfDir(), getVectorDbDir()]) {
+  for (const dir of [root, getSourcePdfDir(), getVectorDbDir(), getModelsDir()]) {
     fs.mkdirSync(dir, { recursive: true });
   }
   return root;
@@ -92,5 +97,6 @@ module.exports = {
   getSourcePdfDir,
   getVectorDbDir,
   getStatusPath,
+  getModelsDir,
   ensureDirectories
 };

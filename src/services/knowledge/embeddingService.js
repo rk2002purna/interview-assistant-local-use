@@ -56,6 +56,18 @@ let _localPipelinePromise = null;
 async function getLocalPipeline() {
   if (!_localPipelinePromise) {
     const transformers = await import('@xenova/transformers');
+    // Pin the model cache to a stable, writable location under userData so the
+    // model persists across restarts and the packaged .exe can find it (instead
+    // of a cwd-relative path that changes between dev and prod).
+    try {
+      const paths = require('./knowledgePaths');
+      paths.ensureDirectories();
+      transformers.env.cacheDir = paths.getModelsDir();
+      transformers.env.allowRemoteModels = true; // download on first use, then cache
+      console.log('[Knowledge] Embedding model cache dir:', paths.getModelsDir());
+    } catch (e) {
+      console.warn('[Knowledge] Could not set model cache dir (using default):', e.message);
+    }
     // Quantized model keeps the download small (~23MB) and CPU usage low.
     _localPipelinePromise = transformers.pipeline('feature-extraction', EMBEDDING_CONFIG.localModel, { quantized: true });
   }
