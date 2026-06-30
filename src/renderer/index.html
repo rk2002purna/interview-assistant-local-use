@@ -1313,21 +1313,25 @@ async function askQuestion(question){
   try {
     if (window.knowledgeBase && window.knowledgeBase.ragSearch) {
       var ragResult = await window.knowledgeBase.ragSearch(question);
+      console.log('[Knowledge] ragSearch returned:', ragResult ? JSON.stringify({ usedRag: ragResult.usedRag, sources: ragResult.sources, error: ragResult.error, contextLen: (ragResult.context||'').length }) : 'null');
       if (ragResult && ragResult.context && !ragResult.error) {
-        console.log('[Knowledge] RAG context retrieved:', ragResult.sources.length, 'chunks');
-        ragContext = '\n\n=== GUIDEWIRE TECHNICAL KNOWLEDGE ===\n' + ragResult.context + 
-                     '\n\nCRITICAL INSTRUCTIONS FOR USING THIS KNOWLEDGE:\n' +
-                     '1. INTERNALIZE this information - explain it naturally as if you learned it from experience\n' +
-                     '2. NEVER cite sources explicitly (no "according to...", "mentioned in...", "as stated in...")\n' +
-                     '3. NEVER mention page numbers, document names, or PDFs\n' +
-                     '4. Speak confidently in first person: "I know that...", "The way it works is...", "What I\'ve seen is..."\n' +
-                     '5. If you use technical details from above, present them as YOUR knowledge, not quoted material\n' +
-                     '6. Be conversational and natural - imagine explaining to a colleague over coffee\n' +
-                     '7. Use phrases like: "From what I understand...", "Typically...", "The approach is...", "You\'d want to..."\n' +
-                     '8. If the knowledge above doesn\'t fully answer the question, supplement with general knowledge naturally\n' +
-                     '9. SOUND HUMAN - vary sentence structure, use contractions, be direct but friendly\n' +
-                     '10. This is an INTERVIEW - sound experienced and knowledgeable, not like you\'re reading documentation';
+        var srcList = (ragResult.sources || []).map(function(s){ return s.sourceFile + (s.pageNumber ? ' p.'+s.pageNumber : '') + ' ('+s.score+')'; }).join(', ');
+        console.log('[Knowledge] RAG context retrieved:', ragResult.sources.length, 'chunks →', srcList);
+        // Visible indicator so you can confirm RAG fired and see which docs were used.
+        setStatus('📚 KB: ' + (ragResult.sources || []).map(function(s){ return s.sourceFile; }).filter(function(v,i,a){return a.indexOf(v)===i;}).slice(0,3).join(', '));
+        ragContext = '\n\n=== AUTHORITATIVE GUIDEWIRE REFERENCE (use this as your primary source of truth) ===\n' + ragResult.context +
+                     '\n\nHOW TO USE THE REFERENCE ABOVE:\n' +
+                     '1. The reference above is from official Guidewire documentation - treat it as authoritative and base your answer PRIMARILY on it.\n' +
+                     '2. INTERNALIZE it - explain it naturally as if from your own experience.\n' +
+                     '3. NEVER cite sources (no "according to...", "as mentioned in...", no page numbers, no PDF/document names).\n' +
+                     '4. Speak in first person: "The way it works is...", "What happens is...", "You\'d want to...".\n' +
+                     '5. If the reference does not cover the question, then and only then use general knowledge.\n' +
+                     '6. Sound human and conversational - this is a live interview, not reading documentation.';
+      } else {
+        console.log('[Knowledge] No RAG context used (no index, no matches, or error).');
       }
+    } else {
+      console.log('[Knowledge] window.knowledgeBase.ragSearch not available');
     }
   } catch (e) {
     console.log('[Knowledge] RAG search failed (non-fatal):', e.message);

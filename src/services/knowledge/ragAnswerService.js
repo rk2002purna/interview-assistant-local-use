@@ -20,9 +20,9 @@
 const embeddings = require('./embeddingService');
 const vectorStore = require('./vectorStoreService');
 
-const TOP_K = 5;                 // retrieve top 5 chunks (Feature 6 recommendation)
-const MAX_CONTEXT_CHARS = 8000;  // hard cap (Feature 15) — ~2k tokens of context
-const MIN_SCORE = 0.15;          // similarity floor; below this we treat as "no good match"
+const TOP_K = 8;                 // retrieve top 8 chunks for better recall
+const MAX_CONTEXT_CHARS = 9000;  // hard cap (~2.2k tokens of context)
+const MIN_SCORE = 0.10;          // similarity floor; below this we treat as "no good match"
 
 /**
  * Retrieve relevant chunks for a question and format them as context.
