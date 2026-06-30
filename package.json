@@ -24,9 +24,17 @@
     "directories": {
       "output": "dist"
     },
-    "asar": false,
+    "asar": true,
     "npmRebuild": false,
     "includeSubNodeModules": true,
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/@lancedb/**",
+      "node_modules/sharp/**",
+      "node_modules/onnxruntime-node/**",
+      "node_modules/@xenova/**",
+      "node_modules/apache-arrow/**"
+    ],
     "win": {
       "target": [
         {
