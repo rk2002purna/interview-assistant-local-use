@@ -18,6 +18,8 @@ jobs:
         run: |
           echo "Checking for @lancedb native module..."
           dir node_modules\@lancedb\lancedb-win32-x64-msvc
+          echo "Checking for apache-arrow..."
+          dir node_modules\apache-arrow
           echo "Checking for @xenova/transformers..."
           dir node_modules\@xenova\transformers
           echo "Checking for pdfjs-dist..."
