@@ -141,7 +141,7 @@
 <div id="app">
   <div id="answer-wrap"><div class="label">Answer</div><div id="answer-text">Select a mode to get started.</div></div>
   <div id="transcript-box"><div class="label">Detected Question</div><div id="transcript-text"></div></div>
-  <div id="api-warning">No API key set. <a onclick="openSettings()">Add your API key in Settings</a></div>
+  <div id="api-warning">No AI provider is configured. <a onclick="openSettings()">Open Settings</a></div>
   <div id="screen-indicator" class="mode-indicator">
     <div class="label">Screen Analyzer</div>
     <div class="info">Scroll to each part of the question and click Capture. When done, click Analyze to get the answer.</div>
@@ -199,6 +199,9 @@ const { ipcRenderer } = require('electron');
 
 // ===== STATE =====
 let apiKey = '', deepseekApiKey = '', geminiApiKey = '', cerebrasApiKey = '', digitaloceanApiKey = '';
+let omniRouteApiKey = '', omniRouteBaseUrl = 'http://127.0.0.1:20128/v1';
+const LOCAL_OMNIROUTE_NO_AUTH = '__local_omniroute_no_auth__';
+let sttModel = 'whisper-large-v3'; // Groq Whisper model used for voice transcription
 let resumeContext = '', jobContext = '';
 // Routing config - holds primary + fallback for text and vision
 let routing = {
@@ -326,6 +329,9 @@ async function reloadConfig() {
   geminiApiKey = config.geminiApiKey || '';
   cerebrasApiKey = config.cerebrasApiKey || '';
   digitaloceanApiKey = config.digitaloceanApiKey || '';
+  omniRouteApiKey = config.omniRouteApiKey || '';
+  omniRouteBaseUrl = config.omniRouteBaseUrl || 'http://127.0.0.1:20128/v1';
+  sttModel = config.sttModel || 'whisper-large-v3';
   resumeContext = config.resumeContext || '';
   jobContext = config.jobContext || '';
   if (config.routing) {
@@ -336,7 +342,7 @@ async function reloadConfig() {
   }
   if (config.screenCaptureInterval) screenCaptureIntervalMs = Math.max(1000, Math.min(10000, config.screenCaptureInterval * 1000));
 
-  // Show warning if primary text provider has no key
+  // Show warning if primary text provider has no usable credential/gateway.
   var primaryKey = getKeyForProvider(routing.textPrimary.provider);
   document.getElementById('api-warning').style.display = primaryKey ? 'none' : 'block';
 }
@@ -369,6 +375,9 @@ function getKeyForProvider(provider) {
   if (provider === 'cerebras') return cerebrasApiKey;
   if (provider === 'digitalocean') return digitaloceanApiKey;
   if (provider === 'groq') return apiKey;
+  if (provider === 'omniroute') {
+    return omniRouteApiKey || (omniRouteBaseUrl ? LOCAL_OMNIROUTE_NO_AUTH : '');
+  }
   return '';
 }
 
@@ -486,11 +495,12 @@ async function captureScreenshot() {
 async function analyzeScreenNow() {
   if (screenAnalyzing || capturedScreenshots.length === 0) return;
 
-  // Check both vision providers' keys
+  // Check both vision providers' keys. Tokenless local OmniRoute uses an
+  // internal sentinel here and is converted back to an empty token at IPC.
   var visionPrimaryKey = getKeyForProvider(routing.visionPrimary.provider);
   var visionFallbackKey = routing.visionFallback && routing.visionFallback.provider ? getKeyForProvider(routing.visionFallback.provider) : '';
   if (!visionPrimaryKey && !visionFallbackKey) {
-    document.getElementById('answer-text').textContent = 'No API key configured for vision. Add a key in Settings.';
+    document.getElementById('answer-text').textContent = 'No API key configured for vision. Add a key or select local OmniRoute in Settings.';
     return;
   }
 
@@ -944,7 +954,7 @@ async function processPassiveUtterance(blob) {
 
   try {
     var b64 = await blobToBase64(blob);
-    var r = await ipcRenderer.invoke('transcribe-audio', { apiKey: apiKey, audioData: b64, mimeType: 'audio/webm;codecs=opus' });
+    var r = await ipcRenderer.invoke('transcribe-audio', { apiKey: apiKey, audioData: b64, mimeType: 'audio/webm;codecs=opus', model: sttModel });
 
     if (r.error) {
       setStatus('Transcription error: ' + (r.error.message || 'unknown'));
@@ -1195,7 +1205,7 @@ async function processManualAudio(blob, mimeType){
     return;
   }
   var b64=await blobToBase64(blob);
-  var r=await ipcRenderer.invoke('transcribe-audio',{apiKey:apiKey,audioData:b64,mimeType:mimeType||'audio/webm;codecs=opus'});
+  var r=await ipcRenderer.invoke('transcribe-audio',{apiKey:apiKey,audioData:b64,mimeType:mimeType||'audio/webm;codecs=opus',model:sttModel});
   if(r.error){
     setStatus('Transcription error: '+(r.error.message||'unknown'));
   } else if(r.text&&r.text.trim()){
@@ -1267,7 +1277,10 @@ async function invokeProviderStream(provider, key, model, messages, systemPrompt
   ipcRenderer.on('ai-stream-chunk', listener);
   try {
     var result = await ipcRenderer.invoke('call-ai-stream', {
-      provider: provider, apiKey: key, model: model,
+      provider: provider,
+      apiKey: provider === 'omniroute' && key === LOCAL_OMNIROUTE_NO_AUTH ? '' : key,
+      baseUrl: provider === 'omniroute' ? omniRouteBaseUrl : undefined,
+      model: model,
       messages: messages, systemPrompt: systemPrompt, streamId: streamId,
       maxTokens: maxTokens, temperature: temperature
     });
@@ -1278,13 +1291,13 @@ async function invokeProviderStream(provider, key, model, messages, systemPrompt
 }
 
 function getActiveApiKey() {
-  // For UI gates — returns primary text key
+  // For UI gates — returns primary text key or local OmniRoute sentinel.
   return getKeyForProvider(routing.textPrimary.provider);
 }
 
 async function askQuestion(question){
   if(!getActiveApiKey() && !getKeyForProvider((routing.textFallback||{}).provider)){
-    document.getElementById('answer-text').textContent='Add API key in Settings';return;
+    document.getElementById('answer-text').textContent='Add API key or select local OmniRoute in Settings';return;
   }
   // If user is viewing a memory snapshot, exit it so the new answer shows live
   if(viewingMemoryId) exitMemoryView();
@@ -1491,6 +1504,7 @@ Answer as a confident candidate with 3 years of experience in Java, Spring Boot,
 RULES:
 - Answer directly — never start with "Sure", "Great question", "Of course", or any filler opener.
 - Never repeat the question back.
+- Always answer in English only, regardless of the language the question is asked in. Never reply in Hindi or any other language.
 - Speak in first person, natural English with contractions (I've, I'd, I'm, that's).
 - Do not add bullet points unless the question is about system design or architecture.
 - Do not provide code unless the interviewer specifically asks for code.
@@ -1555,7 +1569,7 @@ function renderUsagePanel() {
         statusText = 'Fallback';
       }
       html += '<tr>';
-      html += '<td class="provider-name">' + (p === 'digitalocean' ? 'DigitalOcean' : p.charAt(0).toUpperCase() + p.slice(1)) + '</td>';
+      html += '<td class="provider-name">' + (p === 'digitalocean' ? 'DigitalOcean' : p === 'omniroute' ? 'OmniRoute' : p.charAt(0).toUpperCase() + p.slice(1)) + '</td>';
       html += '<td>' + d.calls + '</td>';
       html += '<td class="tokens-used">' + d.totalTokens.toLocaleString() + (d.estimated ? '~' : '') + '</td>';
       html += '<td class="' + statusClass + '">' + statusText + '</td>';

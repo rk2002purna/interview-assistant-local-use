@@ -5,6 +5,10 @@ const os = require('os');
 const https = require('https');
 const { spawn } = require('child_process');
 const { readActiveWindowText } = require('./screen-reader');
+const {
+  listOmniRouteModels,
+  streamOmniRouteCompletion
+} = require('./omniroute-client');
 
 let mainWindow;
 let settingsWindow;
@@ -185,6 +189,12 @@ ipcMain.handle('load-config', () => {
 
 ipcMain.handle('get-platform', () => {
   return process.platform;
+});
+
+// OmniRoute keeps all upstream provider keys in its local dashboard. The desktop
+// app only receives the local gateway URL and an optional gateway access token.
+ipcMain.handle('list-omniroute-models', async (_event, { baseUrl, apiKey } = {}) => {
+  return listOmniRouteModels({ baseUrl, apiKey });
 });
 
 ipcMain.handle('call-ai-api', async (event, { apiKey, model, messages, systemPrompt }) => {
@@ -447,11 +457,28 @@ ipcMain.handle('call-gemini-api', async (event, { apiKey, model, messages, syste
 });
 
 // Streaming AI handler - emits tokens to renderer as they arrive
-ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, model, messages, systemPrompt, streamId, maxTokens, temperature }) => {
+ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, model, messages, systemPrompt, streamId, maxTokens, temperature }) => {
   const sender = event.sender;
   // Use caller-supplied values; fall back to safe defaults
   const resolvedMaxTokens = maxTokens || 220;
   const resolvedTemp = (temperature !== undefined && temperature !== null) ? temperature : 0.25;
+
+  // OmniRoute is a local OpenAI-compatible gateway. Its client enforces a
+  // loopback-only URL so prompts and local gateway credentials cannot be sent
+  // to an arbitrary host through this IPC channel.
+  if (provider === 'omniroute') {
+    return streamOmniRouteCompletion({
+      sender,
+      apiKey,
+      baseUrl,
+      model,
+      messages,
+      systemPrompt,
+      streamId,
+      maxTokens: resolvedMaxTokens,
+      temperature: resolvedTemp
+    });
+  }
 
   // Gemini has its own streaming format
   if (provider === 'gemini') {
@@ -800,7 +827,12 @@ ipcMain.handle('capture-screen-frame', async () => {
   }
 });
 
-ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData, mimeType }) => {
+ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData, mimeType, model }) => {
+  // Resolve the Groq Whisper model. Whitelist the allowed IDs so the value
+  // that gets interpolated into the curl form field can't be anything else.
+  const ALLOWED_STT_MODELS = ['whisper-large-v3', 'whisper-large-v3-turbo', 'distil-whisper-large-v3-en'];
+  const sttModel = ALLOWED_STT_MODELS.includes(model) ? model : 'whisper-large-v3';
+
   // Derive file extension and content-type from the actual mimeType the recorder used.
   // Groq Whisper is strict: the declared type must match the actual container.
   const mime = mimeType || 'audio/webm;codecs=opus';
@@ -829,7 +861,7 @@ ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData, mimeType }
         '-X', 'POST',
         '-H', `Authorization: Bearer ${apiKey}`,
         '-F', `file=@${tempPath};type=${contentType}`,
-        '-F', 'model=whisper-large-v3',
+        '-F', `model=${sttModel}`,
         '-F', 'response_format=json',
         '-F', 'language=en',
         '-F', 'temperature=0',

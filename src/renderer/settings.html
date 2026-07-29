@@ -93,6 +93,7 @@
     <h2>💬 Text Q&A Model (Manual / Passive)</h2>
     <label>Primary Provider</label>
     <select id="text-primary-provider" onchange="updateModelDropdown('text-primary')">
+      <option value="omniroute">🔀 OmniRoute (Local)</option>
       <option value="gemini">🟢 Gemini</option>
       <option value="groq">🟠 Groq</option>
       <option value="cerebras">🟣 Cerebras</option>
@@ -107,6 +108,7 @@
     <label>Fallback Provider <span style="color:#4a5568">(used if primary fails)</span></label>
     <select id="text-fallback-provider" onchange="updateModelDropdown('text-fallback')">
       <option value="">— None —</option>
+      <option value="omniroute">🔀 OmniRoute (Local)</option>
       <option value="gemini">🟢 Gemini</option>
       <option value="groq">🟠 Groq</option>
       <option value="cerebras">🟣 Cerebras</option>
@@ -123,6 +125,7 @@
     <h2>👁 Screen Analyzer Model (Vision)</h2>
     <label>Primary Provider</label>
     <select id="vision-primary-provider" onchange="updateModelDropdown('vision-primary')">
+      <option value="omniroute">🔀 OmniRoute (Local)</option>
       <option value="gemini">🟢 Gemini</option>
       <option value="groq">🟠 Groq</option>
     </select>
@@ -134,13 +137,29 @@
     <label>Fallback Provider</label>
     <select id="vision-fallback-provider" onchange="updateModelDropdown('vision-fallback')">
       <option value="">— None —</option>
+      <option value="omniroute">🔀 OmniRoute (Local)</option>
       <option value="gemini">🟢 Gemini</option>
       <option value="groq">🟠 Groq</option>
     </select>
     <br/>
     <label>Fallback Model</label>
     <select id="vision-fallback-model"></select>
-    <p class="hint">DeepSeek and Cerebras don't support vision. Use Gemini or Groq for screen analysis.</p>
+    <p class="hint">Gemini and Groq provide known vision models. OmniRoute also works when you select a vision-capable route/model from its discovered catalog.</p>
+  </div>
+
+  <div class="section" id="omniroute-section">
+    <h2>🔀 OmniRoute Local Gateway</h2>
+    <label>OpenAI-Compatible Base URL</label>
+    <input type="text" id="omniroute-base-url" value="http://127.0.0.1:20128/v1" placeholder="http://127.0.0.1:20128/v1" />
+    <p class="hint">Only localhost URLs are accepted. Configure your legitimate upstream API keys in the <a href="#" onclick="openExternal('http://127.0.0.1:20128/dashboard')">OmniRoute dashboard</a>.</p>
+    <br/>
+    <label>Gateway Access Token <span style="color:#4a5568">(optional for a local tokenless instance)</span></label>
+    <input type="password" id="omniroute-api-key" placeholder="Leave empty unless OmniRoute authentication is enabled" />
+    <div class="row">
+      <button type="button" onclick="refreshOmniRouteModels(true)">🔄 Test Connection & Load Models</button>
+    </div>
+    <div id="omniroute-status" class="hint">Start OmniRoute locally, then load its available models.</div>
+    <p class="hint" style="margin-top:8px;color:#ed8936;">This integration does not import browser cookies, CLI OAuth sessions, or bypass provider quotas.</p>
   </div>
 
   <div class="section" id="gemini-section">
@@ -158,6 +177,20 @@
     <input type="password" id="api-key" placeholder="gsk_..." />
     <p class="hint">
       Get a free key at <a href="#" onclick="openExternal('https://console.groq.com')">console.groq.com</a> — used for voice-to-text and optionally for chat/vision.
+    </p>
+  </div>
+
+  <div class="section" id="stt-section">
+    <h2>🎙 Speech-to-Text Model (Groq Whisper)</h2>
+    <label>Transcription model used for voice → text</label>
+    <select id="stt-model">
+      <option value="whisper-large-v3">whisper-large-v3 — Most accurate (multilingual)</option>
+      <option value="whisper-large-v3-turbo">⚡ whisper-large-v3-turbo — Fast (multilingual)</option>
+      <option value="distil-whisper-large-v3-en">🪶 distil-whisper-large-v3-en — Fastest (English only)</option>
+    </select>
+    <p class="hint">
+      All options run on Groq's Whisper API using your Groq key above. Turbo is the best speed/accuracy balance;
+      distil is fastest but English-only.
     </p>
   </div>
 
@@ -203,8 +236,8 @@
     <h2>🛡️ Privacy Info</h2>
     <div class="privacy-info">
       ✅ <strong>Invisible on screen share</strong> — uses OS-level window protection<br/>
-      ✅ <strong>API key stored locally</strong> — never sent anywhere except Anthropic<br/>
-      ✅ <strong>No data logging</strong> — conversations stay in memory only<br/>
+      ✅ <strong>Credentials stored locally</strong> — provider keys go only to the selected provider; OmniRoute credentials go only to localhost<br/>
+      ✅ <strong>Local history</strong> — conversations and settings remain on this machine<br/>
       ✅ <strong>Hidden from taskbar & dock</strong> on macOS
     </div>
   </div>
@@ -221,6 +254,14 @@
 
   // Catalog of models per provider, separated by capability (text vs vision)
   const MODEL_CATALOG = {
+    omniroute: {
+      text: [
+        { id: 'auto', label: '🔀 auto — OmniRoute smart routing' }
+      ],
+      vision: [
+        { id: 'auto', label: '🔀 auto — select a vision-capable OmniRoute route' }
+      ]
+    },
     gemini: {
       text: [
         { id: 'gemini-flash-latest', label: '⚡ gemini-flash-latest — Newest Flash' },
@@ -274,6 +315,79 @@
     }
   };
 
+  function ensureOmniRouteModel(modelId) {
+    if (!modelId) return;
+    ['text', 'vision'].forEach(function(capability) {
+      var list = MODEL_CATALOG.omniroute[capability];
+      if (!list.some(function(entry) { return entry.id === modelId; })) {
+        list.push({ id: modelId, label: modelId + ' — saved OmniRoute model' });
+      }
+    });
+  }
+
+  function refreshOmniRouteDropdowns() {
+    ['text-primary', 'text-fallback', 'vision-primary', 'vision-fallback'].forEach(function(prefix) {
+      var providerSelect = document.getElementById(prefix + '-provider');
+      if (!providerSelect || providerSelect.value !== 'omniroute') return;
+      var modelSelect = document.getElementById(prefix + '-model');
+      var selectedModel = modelSelect.value;
+      ensureOmniRouteModel(selectedModel);
+      updateModelDropdown(prefix);
+      if (selectedModel) modelSelect.value = selectedModel;
+    });
+  }
+
+  async function refreshOmniRouteModels(showStatus) {
+    var status = document.getElementById('omniroute-status');
+    var baseUrl = document.getElementById('omniroute-base-url').value.trim() || 'http://127.0.0.1:20128/v1';
+    var apiKey = document.getElementById('omniroute-api-key').value.trim();
+    status.style.color = '#fbd38d';
+    status.textContent = 'Connecting to local OmniRoute...';
+
+    try {
+      var result = await ipcRenderer.invoke('list-omniroute-models', { baseUrl: baseUrl, apiKey: apiKey });
+      if (result.error) {
+        status.style.color = '#fc8181';
+        status.textContent = result.error.message;
+        return false;
+      }
+
+      var existingSelections = [];
+      ['text-primary', 'text-fallback', 'vision-primary', 'vision-fallback'].forEach(function(prefix) {
+        var providerSelect = document.getElementById(prefix + '-provider');
+        if (providerSelect && providerSelect.value === 'omniroute') {
+          existingSelections.push(document.getElementById(prefix + '-model').value);
+        }
+      });
+
+      var entries = [{ id: 'auto', label: '🔀 auto — OmniRoute smart routing' }];
+      (result.models || []).forEach(function(model) {
+        if (!model.id || model.id === 'auto') return;
+        entries.push({
+          id: model.id,
+          label: model.id + (model.ownedBy ? ' — ' + model.ownedBy : '')
+        });
+      });
+      existingSelections.forEach(function(modelId) {
+        if (modelId && !entries.some(function(entry) { return entry.id === modelId; })) {
+          entries.push({ id: modelId, label: modelId + ' — saved model' });
+        }
+      });
+
+      MODEL_CATALOG.omniroute.text = entries.slice();
+      MODEL_CATALOG.omniroute.vision = entries.slice();
+      refreshOmniRouteDropdowns();
+
+      status.style.color = '#68d391';
+      status.textContent = 'Connected — loaded ' + (result.models || []).length + ' model/route IDs.';
+      return true;
+    } catch (error) {
+      status.style.color = '#fc8181';
+      status.textContent = 'OmniRoute connection failed: ' + error.message;
+      return false;
+    }
+  }
+
   function populateModels(selectId, provider, capability) {
     const sel = document.getElementById(selectId);
     if (!sel) return;
@@ -320,6 +434,11 @@
     if (config.deepseekApiKey) document.getElementById('deepseek-api-key').value = config.deepseekApiKey;
     if (config.cerebrasApiKey) document.getElementById('cerebras-api-key').value = config.cerebrasApiKey;
     if (config.digitaloceanApiKey) document.getElementById('digitalocean-api-key').value = config.digitaloceanApiKey;
+    document.getElementById('omniroute-base-url').value = config.omniRouteBaseUrl || 'http://127.0.0.1:20128/v1';
+    if (config.omniRouteApiKey) document.getElementById('omniroute-api-key').value = config.omniRouteApiKey;
+
+    // Speech-to-Text model
+    document.getElementById('stt-model').value = config.sttModel || 'whisper-large-v3';
 
     // Other config
     if (config.resumeContext) document.getElementById('resume-context').value = config.resumeContext;
@@ -331,6 +450,10 @@
     const textFallback = routing.textFallback || { provider: '', model: '' };
     const visionPrimary = routing.visionPrimary || { provider: 'gemini', model: 'gemini-flash-latest' };
     const visionFallback = routing.visionFallback || { provider: '', model: '' };
+
+    [textPrimary, textFallback, visionPrimary, visionFallback].forEach(function(route) {
+      if (route.provider === 'omniroute') ensureOmniRouteModel(route.model);
+    });
 
     document.getElementById('text-primary-provider').value = textPrimary.provider;
     updateModelDropdown('text-primary');
@@ -347,6 +470,10 @@
     document.getElementById('vision-fallback-provider').value = visionFallback.provider || '';
     updateModelDropdown('vision-fallback');
     if (visionFallback.model) document.getElementById('vision-fallback-model').value = visionFallback.model;
+
+    if ([textPrimary, textFallback, visionPrimary, visionFallback].some(function(route) { return route.provider === 'omniroute'; })) {
+      refreshOmniRouteModels(false);
+    }
   }
 
   function save() {
@@ -375,6 +502,9 @@
       deepseekApiKey: document.getElementById('deepseek-api-key').value.trim(),
       cerebrasApiKey: document.getElementById('cerebras-api-key').value.trim(),
       digitaloceanApiKey: document.getElementById('digitalocean-api-key').value.trim(),
+      omniRouteBaseUrl: document.getElementById('omniroute-base-url').value.trim() || 'http://127.0.0.1:20128/v1',
+      omniRouteApiKey: document.getElementById('omniroute-api-key').value.trim(),
+      sttModel: document.getElementById('stt-model').value,
       resumeContext: document.getElementById('resume-context').value.trim(),
       jobContext: document.getElementById('job-context').value.trim(),
       routing: routing
