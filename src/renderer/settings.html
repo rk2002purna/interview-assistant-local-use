@@ -147,6 +147,19 @@
     <p class="hint">Gemini and Groq provide known vision models. OmniRoute also works when you select a vision-capable route/model from its discovered catalog.</p>
   </div>
 
+  <div class="section" id="stt-section">
+    <h2>🎙 Speech-to-Text Model (Voice → Text)</h2>
+    <label>Transcription model (Manual &amp; Passive modes)</label>
+    <select id="stt-model">
+      <option value="whisper-large-v3-turbo">⚡ whisper-large-v3-turbo — Fast &amp; low cost (recommended)</option>
+      <option value="whisper-large-v3">whisper-large-v3 — Most accurate</option>
+    </select>
+    <p class="hint">
+      Speech-to-text runs on Groq's Whisper API (uses your Groq API key) and is pinned to English. Turbo is
+      fastest and cheapest ($0.04/hr); large-v3 is the most accurate ($0.111/hr).
+    </p>
+  </div>
+
   <div class="section" id="omniroute-section">
     <h2>🔀 OmniRoute Local Gateway</h2>
     <label>OpenAI-Compatible Base URL</label>
@@ -177,20 +190,6 @@
     <input type="password" id="api-key" placeholder="gsk_..." />
     <p class="hint">
       Get a free key at <a href="#" onclick="openExternal('https://console.groq.com')">console.groq.com</a> — used for voice-to-text and optionally for chat/vision.
-    </p>
-  </div>
-
-  <div class="section" id="stt-section">
-    <h2>🎙 Speech-to-Text Model (Groq Whisper)</h2>
-    <label>Transcription model used for voice → text</label>
-    <select id="stt-model">
-      <option value="whisper-large-v3">whisper-large-v3 — Most accurate (multilingual)</option>
-      <option value="whisper-large-v3-turbo">⚡ whisper-large-v3-turbo — Fast (multilingual)</option>
-      <option value="distil-whisper-large-v3-en">🪶 distil-whisper-large-v3-en — Fastest (English only)</option>
-    </select>
-    <p class="hint">
-      All options run on Groq's Whisper API using your Groq key above. Turbo is the best speed/accuracy balance;
-      distil is fastest but English-only.
     </p>
   </div>
 
@@ -437,8 +436,10 @@
     document.getElementById('omniroute-base-url').value = config.omniRouteBaseUrl || 'http://127.0.0.1:20128/v1';
     if (config.omniRouteApiKey) document.getElementById('omniroute-api-key').value = config.omniRouteApiKey;
 
-    // Speech-to-Text model
-    document.getElementById('stt-model').value = config.sttModel || 'whisper-large-v3';
+    // Speech-to-Text model (coerce any removed/unknown value to the recommended turbo)
+    var savedStt = config.sttModel || 'whisper-large-v3-turbo';
+    if (savedStt !== 'whisper-large-v3-turbo' && savedStt !== 'whisper-large-v3') savedStt = 'whisper-large-v3-turbo';
+    document.getElementById('stt-model').value = savedStt;
 
     // Other config
     if (config.resumeContext) document.getElementById('resume-context').value = config.resumeContext;

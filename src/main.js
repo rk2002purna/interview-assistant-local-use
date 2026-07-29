@@ -830,8 +830,8 @@ ipcMain.handle('capture-screen-frame', async () => {
 ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData, mimeType, model }) => {
   // Resolve the Groq Whisper model. Whitelist the allowed IDs so the value
   // that gets interpolated into the curl form field can't be anything else.
-  const ALLOWED_STT_MODELS = ['whisper-large-v3', 'whisper-large-v3-turbo', 'distil-whisper-large-v3-en'];
-  const sttModel = ALLOWED_STT_MODELS.includes(model) ? model : 'whisper-large-v3';
+  const ALLOWED_STT_MODELS = ['whisper-large-v3-turbo', 'whisper-large-v3'];
+  const sttModel = ALLOWED_STT_MODELS.includes(model) ? model : 'whisper-large-v3-turbo';
 
   // Derive file extension and content-type from the actual mimeType the recorder used.
   // Groq Whisper is strict: the declared type must match the actual container.

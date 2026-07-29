@@ -201,7 +201,7 @@ const { ipcRenderer } = require('electron');
 let apiKey = '', deepseekApiKey = '', geminiApiKey = '', cerebrasApiKey = '', digitaloceanApiKey = '';
 let omniRouteApiKey = '', omniRouteBaseUrl = 'http://127.0.0.1:20128/v1';
 const LOCAL_OMNIROUTE_NO_AUTH = '__local_omniroute_no_auth__';
-let sttModel = 'whisper-large-v3'; // Groq Whisper model used for voice transcription
+let sttModel = 'whisper-large-v3-turbo'; // Groq Whisper model used for voice transcription
 let resumeContext = '', jobContext = '';
 // Routing config - holds primary + fallback for text and vision
 let routing = {
@@ -331,7 +331,8 @@ async function reloadConfig() {
   digitaloceanApiKey = config.digitaloceanApiKey || '';
   omniRouteApiKey = config.omniRouteApiKey || '';
   omniRouteBaseUrl = config.omniRouteBaseUrl || 'http://127.0.0.1:20128/v1';
-  sttModel = config.sttModel || 'whisper-large-v3';
+  sttModel = config.sttModel || 'whisper-large-v3-turbo';
+  if (sttModel !== 'whisper-large-v3-turbo' && sttModel !== 'whisper-large-v3') sttModel = 'whisper-large-v3-turbo';
   resumeContext = config.resumeContext || '';
   jobContext = config.jobContext || '';
   if (config.routing) {
