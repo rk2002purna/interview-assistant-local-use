@@ -176,47 +176,52 @@
   </div>
 
   <div class="section" id="gemini-section">
-    <h2>🟢 Gemini API Key</h2>
-    <label>Gemini API Key (stored locally on your machine only)</label>
-    <input type="password" id="gemini-api-key" placeholder="AIza..." />
+    <h2>🟢 Gemini API Keys</h2>
+    <label>Gemini accounts — add one or more keys (auto-rotated if one is rate-limited)</label>
+    <div id="gemini-keys" class="key-list"></div>
+    <button type="button" class="add-key-btn" style="background:rgba(99,179,237,0.12);border:1px solid rgba(99,179,237,0.3);color:#63b3ed;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;" onclick="addKeyRow('gemini-keys','AIza...')">➕ Add account</button>
     <p class="hint">
-      Get a free key at <a href="#" onclick="openExternal('https://aistudio.google.com/apikey')">aistudio.google.com/apikey</a>
+      Get a free key at <a href="#" onclick="openExternal('https://aistudio.google.com/apikey')">aistudio.google.com/apikey</a> — keys are stored locally on your machine only.
     </p>
   </div>
 
   <div class="section">
-    <h2>🔑 Groq API Key</h2>
-    <label>Groq API Key (also required for voice transcription)</label>
-    <input type="password" id="api-key" placeholder="gsk_..." />
+    <h2>🔑 Groq API Keys</h2>
+    <label>Groq accounts — add one or more keys (also used for voice transcription; auto-rotated on limit)</label>
+    <div id="groq-keys" class="key-list"></div>
+    <button type="button" class="add-key-btn" style="background:rgba(99,179,237,0.12);border:1px solid rgba(99,179,237,0.3);color:#63b3ed;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;" onclick="addKeyRow('groq-keys','gsk_...')">➕ Add account</button>
     <p class="hint">
       Get a free key at <a href="#" onclick="openExternal('https://console.groq.com')">console.groq.com</a> — used for voice-to-text and optionally for chat/vision.
     </p>
   </div>
 
   <div class="section" id="deepseek-section">
-    <h2>🔵 DeepSeek API Key</h2>
-    <label>DeepSeek API Key (stored locally on your machine only)</label>
-    <input type="password" id="deepseek-api-key" placeholder="sk-..." />
+    <h2>🔵 DeepSeek API Keys</h2>
+    <label>DeepSeek accounts — add one or more keys (auto-rotated on limit)</label>
+    <div id="deepseek-keys" class="key-list"></div>
+    <button type="button" class="add-key-btn" style="background:rgba(99,179,237,0.12);border:1px solid rgba(99,179,237,0.3);color:#63b3ed;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;" onclick="addKeyRow('deepseek-keys','sk-...')">➕ Add account</button>
     <p class="hint">
-      Get your key at <a href="#" onclick="openExternal('https://platform.deepseek.com')">platform.deepseek.com</a>
+      Get your key at <a href="#" onclick="openExternal('https://platform.deepseek.com')">platform.deepseek.com</a> — stored locally on your machine only.
     </p>
   </div>
 
   <div class="section" id="cerebras-section">
-    <h2>🟣 Cerebras API Key</h2>
-    <label>Cerebras API Key — fastest text inference (stored locally on your machine only)</label>
-    <input type="password" id="cerebras-api-key" placeholder="csk-..." />
+    <h2>🟣 Cerebras API Keys</h2>
+    <label>Cerebras accounts — fastest text inference; add one or more keys (auto-rotated on limit)</label>
+    <div id="cerebras-keys" class="key-list"></div>
+    <button type="button" class="add-key-btn" style="background:rgba(99,179,237,0.12);border:1px solid rgba(99,179,237,0.3);color:#63b3ed;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;" onclick="addKeyRow('cerebras-keys','csk-...')">➕ Add account</button>
     <p class="hint">
-      Get a free key at <a href="#" onclick="openExternal('https://cloud.cerebras.ai')">cloud.cerebras.ai</a> — text-only (no vision).
+      Get a free key at <a href="#" onclick="openExternal('https://cloud.cerebras.ai')">cloud.cerebras.ai</a> — text-only (no vision), stored locally.
     </p>
   </div>
 
   <div class="section" id="digitalocean-section">
-    <h2>🌊 DigitalOcean Serverless Inference API Key</h2>
-    <label>DigitalOcean Model Access Key (stored locally on your machine only)</label>
-    <input type="password" id="digitalocean-api-key" placeholder="dop_v1_..." />
+    <h2>🌊 DigitalOcean Serverless Inference API Keys</h2>
+    <label>DigitalOcean accounts — add one or more model access keys (auto-rotated on limit)</label>
+    <div id="digitalocean-keys" class="key-list"></div>
+    <button type="button" class="add-key-btn" style="background:rgba(99,179,237,0.12);border:1px solid rgba(99,179,237,0.3);color:#63b3ed;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;" onclick="addKeyRow('digitalocean-keys','dop_v1_...')">➕ Add account</button>
     <p class="hint">
-      Get your key at <a href="#" onclick="openExternal('https://cloud.digitalocean.com/gen-ai')">cloud.digitalocean.com/gen-ai</a> — text-only (no vision).
+      Get your key at <a href="#" onclick="openExternal('https://cloud.digitalocean.com/gen-ai')">cloud.digitalocean.com/gen-ai</a> — text-only (no vision), stored locally.
     </p>
   </div>
 
@@ -424,15 +429,81 @@
     populateModels(prefix + '-model', provider, capability);
   }
 
+  // ===== Multiple API keys ("accounts") per provider =====
+  // Reads the new providerKeys arrays, tolerating legacy single-key fields.
+  function normalizeProviderKeysForSettings(config) {
+    var pk = (config && config.providerKeys) || {};
+    function pick(provider, legacy) {
+      var arr = Array.isArray(pk[provider]) ? pk[provider] : [];
+      arr = arr.map(function(k){ return (k == null ? '' : String(k)).trim(); }).filter(function(k){ return k; });
+      if (!arr.length && legacy && String(legacy).trim()) arr = [String(legacy).trim()];
+      return arr.filter(function(v, i, a){ return a.indexOf(v) === i; });
+    }
+    return {
+      gemini: pick('gemini', config.geminiApiKey),
+      groq: pick('groq', config.apiKey),
+      deepseek: pick('deepseek', config.deepseekApiKey),
+      cerebras: pick('cerebras', config.cerebrasApiKey),
+      digitalocean: pick('digitalocean', config.digitaloceanApiKey)
+    };
+  }
+
+  function makeKeyRow(value, placeholder) {
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:6px;';
+    var input = document.createElement('input');
+    input.type = 'password';
+    input.className = 'key-input';
+    input.placeholder = placeholder || '';
+    input.value = value || '';
+    input.style.flex = '1';
+    var remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '\u2715';
+    remove.title = 'Remove this account';
+    remove.style.cssText = 'background:rgba(252,92,101,0.15);border:1px solid rgba(252,92,101,0.35);color:#fc5c65;border-radius:6px;width:32px;height:34px;cursor:pointer;font-size:12px;flex:0 0 auto;';
+    remove.onclick = function(){ row.remove(); };
+    row.appendChild(input);
+    row.appendChild(remove);
+    return row;
+  }
+
+  function renderKeyRows(containerId, keys, placeholder) {
+    var c = document.getElementById(containerId);
+    if (!c) return;
+    c.innerHTML = '';
+    c.dataset.placeholder = placeholder || '';
+    var list = (keys && keys.length) ? keys : [''];
+    list.forEach(function(k){ c.appendChild(makeKeyRow(k, placeholder)); });
+  }
+
+  function addKeyRow(containerId, placeholder) {
+    var c = document.getElementById(containerId);
+    if (!c) return;
+    c.appendChild(makeKeyRow('', placeholder || c.dataset.placeholder || ''));
+  }
+
+  function collectKeys(containerId) {
+    var c = document.getElementById(containerId);
+    if (!c) return [];
+    var out = [];
+    c.querySelectorAll('.key-input').forEach(function(inp){
+      var v = inp.value.trim();
+      if (v) out.push(v);
+    });
+    return out.filter(function(v, i, a){ return a.indexOf(v) === i; }); // de-dupe
+  }
+
   async function load() {
     const config = await ipcRenderer.invoke('load-config');
 
-    // API keys
-    if (config.apiKey) document.getElementById('api-key').value = config.apiKey;
-    if (config.geminiApiKey) document.getElementById('gemini-api-key').value = config.geminiApiKey;
-    if (config.deepseekApiKey) document.getElementById('deepseek-api-key').value = config.deepseekApiKey;
-    if (config.cerebrasApiKey) document.getElementById('cerebras-api-key').value = config.cerebrasApiKey;
-    if (config.digitaloceanApiKey) document.getElementById('digitalocean-api-key').value = config.digitaloceanApiKey;
+    // API keys — multiple accounts per provider (rotated on failure)
+    var pk = normalizeProviderKeysForSettings(config);
+    renderKeyRows('gemini-keys', pk.gemini, 'AIza...');
+    renderKeyRows('groq-keys', pk.groq, 'gsk_...');
+    renderKeyRows('deepseek-keys', pk.deepseek, 'sk-...');
+    renderKeyRows('cerebras-keys', pk.cerebras, 'csk-...');
+    renderKeyRows('digitalocean-keys', pk.digitalocean, 'dop_v1_...');
     document.getElementById('omniroute-base-url').value = config.omniRouteBaseUrl || 'http://127.0.0.1:20128/v1';
     if (config.omniRouteApiKey) document.getElementById('omniroute-api-key').value = config.omniRouteApiKey;
 
@@ -497,12 +568,22 @@
       }
     };
 
+    var providerKeys = {
+      gemini: collectKeys('gemini-keys'),
+      groq: collectKeys('groq-keys'),
+      deepseek: collectKeys('deepseek-keys'),
+      cerebras: collectKeys('cerebras-keys'),
+      digitalocean: collectKeys('digitalocean-keys')
+    };
+
     const config = {
-      apiKey: document.getElementById('api-key').value.trim(),
-      geminiApiKey: document.getElementById('gemini-api-key').value.trim(),
-      deepseekApiKey: document.getElementById('deepseek-api-key').value.trim(),
-      cerebrasApiKey: document.getElementById('cerebras-api-key').value.trim(),
-      digitaloceanApiKey: document.getElementById('digitalocean-api-key').value.trim(),
+      providerKeys: providerKeys,
+      // Legacy single-key fields kept in sync (first account) for backward compatibility.
+      apiKey: providerKeys.groq[0] || '',
+      geminiApiKey: providerKeys.gemini[0] || '',
+      deepseekApiKey: providerKeys.deepseek[0] || '',
+      cerebrasApiKey: providerKeys.cerebras[0] || '',
+      digitaloceanApiKey: providerKeys.digitalocean[0] || '',
       omniRouteBaseUrl: document.getElementById('omniroute-base-url').value.trim() || 'http://127.0.0.1:20128/v1',
       omniRouteApiKey: document.getElementById('omniroute-api-key').value.trim(),
       sttModel: document.getElementById('stt-model').value,

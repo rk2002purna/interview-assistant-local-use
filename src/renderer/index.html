@@ -201,6 +201,10 @@ const { ipcRenderer } = require('electron');
 let apiKey = '', deepseekApiKey = '', geminiApiKey = '', cerebrasApiKey = '', digitaloceanApiKey = '';
 let omniRouteApiKey = '', omniRouteBaseUrl = 'http://127.0.0.1:20128/v1';
 const LOCAL_OMNIROUTE_NO_AUTH = '__local_omniroute_no_auth__';
+// Multiple API keys ("accounts") per provider for automatic rotation on failure.
+let providerKeys = { gemini: [], groq: [], cerebras: [], deepseek: [], digitalocean: [] };
+// Sticky pointer to the last working account index per provider (advances on failure).
+let keyIndexByProvider = {};
 let sttModel = 'whisper-large-v3-turbo'; // Groq Whisper model used for voice transcription
 let resumeContext = '', jobContext = '';
 // Routing config - holds primary + fallback for text and vision
@@ -324,11 +328,13 @@ async function init() {
 
 async function reloadConfig() {
   const config = await ipcRenderer.invoke('load-config');
-  apiKey = config.apiKey || '';
-  deepseekApiKey = config.deepseekApiKey || '';
-  geminiApiKey = config.geminiApiKey || '';
-  cerebrasApiKey = config.cerebrasApiKey || '';
-  digitaloceanApiKey = config.digitaloceanApiKey || '';
+  providerKeys = normalizeProviderKeys(config);
+  // Keep legacy single-key vars in sync (first account) for UI gates & any legacy refs.
+  apiKey = providerKeys.groq[0] || '';
+  deepseekApiKey = providerKeys.deepseek[0] || '';
+  geminiApiKey = providerKeys.gemini[0] || '';
+  cerebrasApiKey = providerKeys.cerebras[0] || '';
+  digitaloceanApiKey = providerKeys.digitalocean[0] || '';
   omniRouteApiKey = config.omniRouteApiKey || '';
   omniRouteBaseUrl = config.omniRouteBaseUrl || 'http://127.0.0.1:20128/v1';
   sttModel = config.sttModel || 'whisper-large-v3-turbo';
@@ -370,16 +376,38 @@ function buildSystemPrompt(basePrompt) {
   return basePrompt + contextBlock;
 }
 
-function getKeyForProvider(provider) {
-  if (provider === 'gemini') return geminiApiKey;
-  if (provider === 'deepseek') return deepseekApiKey;
-  if (provider === 'cerebras') return cerebrasApiKey;
-  if (provider === 'digitalocean') return digitaloceanApiKey;
-  if (provider === 'groq') return apiKey;
-  if (provider === 'omniroute') {
-    return omniRouteApiKey || (omniRouteBaseUrl ? LOCAL_OMNIROUTE_NO_AUTH : '');
+// Build the per-provider key arrays from config, tolerating the legacy
+// single-key fields so older config files keep working.
+function normalizeProviderKeys(config) {
+  var pk = (config && config.providerKeys) || {};
+  function pick(provider, legacy) {
+    var arr = Array.isArray(pk[provider]) ? pk[provider] : [];
+    arr = arr.map(function(k){ return (k == null ? '' : String(k)).trim(); }).filter(function(k){ return k; });
+    if (!arr.length && legacy && String(legacy).trim()) arr = [String(legacy).trim()];
+    return arr.filter(function(v, i, a){ return a.indexOf(v) === i; }); // de-dupe
   }
-  return '';
+  return {
+    gemini: pick('gemini', config.geminiApiKey),
+    groq: pick('groq', config.apiKey),
+    deepseek: pick('deepseek', config.deepseekApiKey),
+    cerebras: pick('cerebras', config.cerebrasApiKey),
+    digitalocean: pick('digitalocean', config.digitaloceanApiKey)
+  };
+}
+
+// All configured account keys for a provider (empty array if none).
+function getKeysForProvider(provider) {
+  if (provider === 'omniroute') {
+    var token = omniRouteApiKey || (omniRouteBaseUrl ? LOCAL_OMNIROUTE_NO_AUTH : '');
+    return token ? [token] : [];
+  }
+  var arr = (providerKeys && providerKeys[provider]) || [];
+  return arr.filter(function(k){ return k && String(k).trim(); });
+}
+
+// First configured key for a provider — used for UI gates / status checks.
+function getKeyForProvider(provider) {
+  return getKeysForProvider(provider)[0] || '';
 }
 
 // ===== MODE SWITCHING =====
@@ -538,6 +566,9 @@ async function analyzeScreenNow() {
 
   var streamed = '';
   var firstChunk = true;
+  // Reset before each account/provider attempt so a failed partial stream is
+  // not concatenated with the retry's output.
+  function resetStreamForAttempt(){ streamed=''; firstChunk=true; if(!viewingMemoryId) answerEl.innerHTML='<span class="thinking-dots">Analyzing...</span>'; }
   try {
     var data = await callAIStream(
       [{ role: 'user', content: content }],
@@ -549,7 +580,8 @@ async function analyzeScreenNow() {
       },
       'vision',
       600,   // vision always gets full token budget — screen may contain complex problems
-      0.25
+      0.25,
+      resetStreamForAttempt
     );
 
     if (data.error) {
@@ -955,7 +987,7 @@ async function processPassiveUtterance(blob) {
 
   try {
     var b64 = await blobToBase64(blob);
-    var r = await ipcRenderer.invoke('transcribe-audio', { apiKey: apiKey, audioData: b64, mimeType: 'audio/webm;codecs=opus', model: sttModel });
+    var r = await transcribeWithRotation(b64, 'audio/webm;codecs=opus');
 
     if (r.error) {
       setStatus('Transcription error: ' + (r.error.message || 'unknown'));
@@ -1085,7 +1117,7 @@ async function processManualCapture(blob) {
   }
   try {
     var b64 = await blobToBase64(blob);
-    var r = await ipcRenderer.invoke('transcribe-audio', { apiKey: apiKey, audioData: b64, mimeType: 'audio/webm;codecs=opus' });
+    var r = await transcribeWithRotation(b64, 'audio/webm;codecs=opus');
 
     if (r.error) {
       setStatus('Transcription error: ' + (r.error.message || 'unknown'));
@@ -1206,7 +1238,7 @@ async function processManualAudio(blob, mimeType){
     return;
   }
   var b64=await blobToBase64(blob);
-  var r=await ipcRenderer.invoke('transcribe-audio',{apiKey:apiKey,audioData:b64,mimeType:mimeType||'audio/webm;codecs=opus',model:sttModel});
+  var r=await transcribeWithRotation(b64, mimeType||'audio/webm;codecs=opus');
   if(r.error){
     setStatus('Transcription error: '+(r.error.message||'unknown'));
   } else if(r.text&&r.text.trim()){
@@ -1228,41 +1260,92 @@ async function toggleMic(){if(isListening){stopAllAudio();}else{var ok=await sta
 
 // ===== AI (shared) =====
 // Try primary, then fallback if primary errors. Streams tokens via onDelta.
-async function callAIStream(messages, systemPrompt, onDelta, target, maxTokens, temperature) {
+// Stream from a single provider, rotating across its configured account keys.
+// Each account failure advances a sticky pointer so the next attempt/request
+// starts from a fresh account. Returns the first success, or an error only
+// after every account for this provider has failed.
+async function streamProviderWithRotation(provider, model, messages, systemPrompt, onDelta, maxTokens, temperature, onAttemptStart, label) {
+  var keys = getKeysForProvider(provider);
+  if (!keys.length || !model) {
+    return { error: { message: 'No API key configured for ' + provider + '.' }, noKeys: true };
+  }
+  var start = keyIndexByProvider[provider] || 0;
+  if (start >= keys.length) start = 0;
+  var lastError = null;
+  for (var attempt = 0; attempt < keys.length; attempt++) {
+    var idx = (start + attempt) % keys.length;
+    if (keys.length > 1) setStatus((label || provider) + ': account ' + (idx + 1) + '/' + keys.length + '...');
+    if (onAttemptStart) onAttemptStart();
+    var result = await invokeProviderStream(provider, keys[idx], model, messages, systemPrompt, onDelta, maxTokens, temperature);
+    if (!result.error) {
+      keyIndexByProvider[provider] = idx; // stick with the account that worked
+      return result;
+    }
+    lastError = result.error;
+    trackUsage({ provider: provider, model: model, usage: {}, error: 'account ' + (idx + 1) + '/' + keys.length + ': ' + result.error.message });
+    keyIndexByProvider[provider] = (idx + 1) % keys.length; // rotate for the next attempt/request
+    if (keys.length > 1) console.warn('[key-rotation] ' + provider + ' account ' + (idx + 1) + ' failed:', result.error.message);
+  }
+  return { error: { message: 'All ' + keys.length + ' ' + provider + ' account(s) failed. Last: ' + (lastError ? lastError.message : 'unknown') }, allKeysFailed: true };
+}
+
+// Transcribe audio via Groq Whisper, rotating across Groq accounts on failure.
+async function transcribeWithRotation(b64, mimeType) {
+  var keys = getKeysForProvider('groq');
+  if (!keys.length) {
+    return { error: { message: 'Groq API key required for voice transcription. Add it in Settings.' } };
+  }
+  var start = keyIndexByProvider['groq'] || 0;
+  if (start >= keys.length) start = 0;
+  var lastError = null;
+  for (var attempt = 0; attempt < keys.length; attempt++) {
+    var idx = (start + attempt) % keys.length;
+    if (keys.length > 1) setStatus('Transcribing (account ' + (idx + 1) + '/' + keys.length + ')...');
+    var r = await ipcRenderer.invoke('transcribe-audio', {
+      apiKey: keys[idx], audioData: b64, mimeType: mimeType || 'audio/webm;codecs=opus', model: sttModel
+    });
+    if (!r.error) {
+      keyIndexByProvider['groq'] = idx;
+      return r;
+    }
+    lastError = r.error;
+    keyIndexByProvider['groq'] = (idx + 1) % keys.length;
+    if (keys.length > 1) console.warn('[key-rotation] groq (transcription) account ' + (idx + 1) + ' failed:', r.error.message);
+  }
+  return { error: lastError || { message: 'All Groq account(s) failed for transcription.' } };
+}
+
+// Try the primary provider (rotating its accounts); if every primary account
+// fails, fall back to the fallback provider (rotating its accounts too).
+// Streams tokens via onDelta. onAttemptStart (optional) resets the caller's
+// stream buffer before each attempt so a failed partial stream isn't
+// concatenated with the retry.
+async function callAIStream(messages, systemPrompt, onDelta, target, maxTokens, temperature, onAttemptStart) {
   // target = 'text' or 'vision'
   var primary = target === 'vision' ? routing.visionPrimary : routing.textPrimary;
   var fallback = target === 'vision' ? routing.visionFallback : routing.textFallback;
 
-  // Try primary
-  var primaryKey = getKeyForProvider(primary.provider);
-  if (primaryKey && primary.model) {
-    var result = await invokeProviderStream(primary.provider, primaryKey, primary.model, messages, systemPrompt, onDelta, maxTokens, temperature);
+  var hasPrimary = getKeysForProvider(primary.provider).length && primary.model;
+  if (hasPrimary) {
+    var result = await streamProviderWithRotation(primary.provider, primary.model, messages, systemPrompt, onDelta, maxTokens, temperature, onAttemptStart, 'Primary ' + primary.provider);
     if (!result.error) return result;
-    // Primary failed — log and try fallback if configured
-    trackUsage({ provider: primary.provider, model: primary.model, usage: {}, error: result.error.message });
-    console.warn('Primary failed:', result.error.message);
+
+    // Every primary account failed — try the fallback provider if configured.
     if (!fallback || !fallback.provider || !fallback.model) return result;
-
-    var fallbackKey = getKeyForProvider(fallback.provider);
-    if (!fallbackKey) {
-      return { error: { message: 'Primary failed (' + result.error.message + '). Fallback ' + fallback.provider + ' has no API key.' } };
+    if (!getKeysForProvider(fallback.provider).length) {
+      return { error: { message: 'Primary ' + primary.provider + ' failed on all accounts (' + result.error.message + '). Fallback ' + fallback.provider + ' has no API key.' } };
     }
-
-    setStatus('Primary failed, trying fallback (' + fallback.provider + ')...');
-    var fallbackResult = await invokeProviderStream(fallback.provider, fallbackKey, fallback.model, messages, systemPrompt, onDelta, maxTokens, temperature);
-    if (fallbackResult.error) {
-      trackUsage({ provider: fallback.provider, model: fallback.model, usage: {}, error: fallbackResult.error.message });
-      return { error: { message: 'Both primary and fallback failed. Primary: ' + result.error.message + '. Fallback: ' + fallbackResult.error.message } };
+    setStatus('All ' + primary.provider + ' accounts failed — switching to fallback (' + fallback.provider + ')...');
+    var fbResult = await streamProviderWithRotation(fallback.provider, fallback.model, messages, systemPrompt, onDelta, maxTokens, temperature, onAttemptStart, 'Fallback ' + fallback.provider);
+    if (fbResult.error) {
+      return { error: { message: 'Both primary and fallback failed. Primary: ' + result.error.message + ' | Fallback: ' + fbResult.error.message } };
     }
-    return fallbackResult;
+    return fbResult;
   }
 
-  // No primary key — try fallback directly
-  if (fallback && fallback.provider && fallback.model) {
-    var fbKey = getKeyForProvider(fallback.provider);
-    if (fbKey) {
-      return await invokeProviderStream(fallback.provider, fbKey, fallback.model, messages, systemPrompt, onDelta, maxTokens, temperature);
-    }
+  // No primary keys — try the fallback provider directly.
+  if (fallback && fallback.provider && fallback.model && getKeysForProvider(fallback.provider).length) {
+    return await streamProviderWithRotation(fallback.provider, fallback.model, messages, systemPrompt, onDelta, maxTokens, temperature, onAttemptStart, 'Fallback ' + fallback.provider);
   }
 
   return { error: { message: 'No API key configured for ' + primary.provider + ' (primary). Add a key in Settings.' } };
@@ -1360,6 +1443,9 @@ async function askQuestion(question){
 
   var streamed='';
   var firstChunk=true;
+  // Reset before each account/provider attempt so a failed partial stream is
+  // not concatenated with the retry's output.
+  function resetStreamForAttempt(){ streamed=''; firstChunk=true; if(!viewingMemoryId) el.innerHTML='<span class="thinking-dots">Thinking...</span>'; }
   try{
     var data=await callAIStream(
       historySlice,
@@ -1372,7 +1458,8 @@ async function askQuestion(question){
       },
       'text',
       maxTokens,
-      temperature
+      temperature,
+      resetStreamForAttempt
     );
     if(data.error){
       if(!viewingMemoryId) el.textContent='Error: '+data.error.message;
