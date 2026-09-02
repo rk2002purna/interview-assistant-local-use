@@ -12,6 +12,40 @@ const {
 } = require('./omniroute-client');
 
 let mainWindow;
+
+// Recover assistant text from a raw response body when incremental SSE parsing
+// produced nothing. This happens when the response isn't delivered as live SSE
+// — e.g. a corporate inspection proxy buffered the whole response, or the
+// provider returned a single non-streaming JSON body. Returns '' if no text is
+// found (caller then surfaces a real error instead of a silent blank).
+function extractTextFromRawBody(rawBody) {
+  if (!rawBody) return '';
+  // Non-streaming OpenAI-compatible JSON: { choices: [{ message: { content } }] }.
+  try {
+    const whole = JSON.parse(rawBody);
+    const choice = whole && whole.choices && whole.choices[0];
+    const txt = choice && ((choice.message && choice.message.content) || choice.text);
+    if (txt) return txt;
+  } catch (_e) {
+    /* not a single JSON object; fall through to an SSE re-parse */
+  }
+  // SSE events we may have missed: concatenate every data: delta/message content.
+  let text = '';
+  for (const line of rawBody.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) continue;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    try {
+      const json = JSON.parse(payload);
+      const chunk = json.choices && json.choices[0] && (json.choices[0].delta || json.choices[0].message);
+      if (chunk && chunk.content) text += chunk.content;
+    } catch (_e2) {
+      /* ignore a partial/non-JSON line */
+    }
+  }
+  return text;
+}
 let settingsWindow;
 let knowledgeBaseWindow;
 let miniMode = false;
@@ -730,6 +764,24 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
           });
           resolve({ error: { message: errorMsg } });
         } else {
+          // If live SSE parsing produced nothing but we received a body, recover
+          // the answer from the raw body (proxy buffered it, or it came back as a
+          // non-streaming JSON response).
+          if (!fullText && rawBody) {
+            fullText = extractTextFromRawBody(rawBody);
+          }
+          // Never resolve a silent empty success — surface a real error so it is
+          // visible and diagnosable instead of a blank answer.
+          if (!fullText) {
+            const detail = rawBody
+              ? ': ' + rawBody.substring(0, 200)
+              : ' (no response body received)';
+            sender.send('ai-usage-update', {
+              provider: provider, model: model, usage: {}, error: 'Empty response' + detail
+            });
+            resolve({ error: { message: 'Empty response from ' + provider + detail } });
+            return;
+          }
           // Always emit a usage update so every provider shows in the Usage panel.
           // Providers that support stream_options return real token counts;
           // others (DigitalOcean, Cerebras) get a character-based estimate.
