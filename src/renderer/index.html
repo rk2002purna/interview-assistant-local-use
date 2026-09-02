@@ -6,6 +6,10 @@
   <title>Interview Assistant</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    /* Stealth: keep the normal arrow cursor on ALL interactive elements so nothing
+       looks clickable on a shared screen. Elements stay fully functional; only the
+       cursor no longer changes to the pointer/hand. !important overrides inline styles. */
+    button, a, select, label, summary, [onclick], [role="button"] { cursor: default !important; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: transparent; color: #e2e8f0; user-select: none; height: 100vh; overflow: hidden; }
     #app { background: rgba(15,15,25,0.85); border: 1px solid rgba(99,179,237,0.15); border-radius: 14px; height: 100vh; display: flex; flex-direction: column; backdrop-filter: blur(8px); overflow: hidden; }
     #titlebar { -webkit-app-region: drag; background: rgba(0,0,0,0.15); padding: 6px 10px; display: flex; align-items: center; justify-content: flex-end; flex-shrink: 0; border-top: 1px solid rgba(99,179,237,0.08); }
@@ -14,10 +18,14 @@
     .btn-close { background: #fc5c65; color: #7a0000; }
     .btn-min { background: #fed330; color: #7a5500; }
     .btn-set { background: #45aaf2; color: #003060; }
-    #mode-toggle-bar { padding: 6px 14px; display: flex; align-items: center; gap: 6px; background: rgba(0,0,0,0.25); border-bottom: 1px solid rgba(99,179,237,0.1); flex-shrink: 0; }
+    #mode-toggle-bar { padding: 6px 14px; display: flex; align-items: center; gap: 6px; background: rgba(0,0,0,0.25); border-bottom: 1px solid rgba(99,179,237,0.1); flex-shrink: 0; flex-wrap: wrap; row-gap: 6px; }
     .mode-btn { padding: 4px 10px; border-radius: 14px; border: 1px solid rgba(99,179,237,0.2); background: rgba(99,179,237,0.08); color: #a0aec0; font-size: 10px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
     .mode-btn.active { background: rgba(72,187,120,0.25); border-color: rgba(72,187,120,0.5); color: #68d391; }
     .mode-btn:hover { opacity: 0.85; }
+    /* Compact answer-style switcher — reuses the mode bar row, pushed to the far right (no extra vertical space) */
+    #style-switcher { -webkit-app-region: no-drag; margin-left: auto; background: rgba(99,179,237,0.08); border: 1px solid rgba(99,179,237,0.2); color: #a0aec0; font-size: 10px; font-weight: 600; border-radius: 12px; padding: 3px 6px; cursor: pointer; outline: none; max-width: 120px; }
+    #style-switcher:hover { background: rgba(99,179,237,0.15); }
+    #style-switcher option { background: #1a202c; color: #e2e8f0; }
     #statusbar { padding: 7px 14px; display: flex; align-items: center; gap: 10px; background: rgba(0,0,0,0.2); flex-shrink: 0; flex-wrap: wrap; }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #4a5568; transition: background 0.3s; }
     .status-dot.listening { background: #48bb78; animation: pulse 1.5s infinite; }
@@ -25,7 +33,7 @@
     .status-dot.passive { background: #9f7aea; animation: pulse 2s infinite; }
     .status-dot.screen-active { background: #4fd1c5; animation: pulse 2s infinite; }
     #status-text { font-size: 11px; color: #a0aec0; }
-    #mic-btn { margin-left: auto; background: rgba(99,179,237,0.15); border: 1px solid rgba(99,179,237,0.3); color: #63b3ed; padding: 4px 12px; border-radius: 20px; cursor: pointer; font-size: 11px; font-weight: 600; transition: all 0.2s; }
+    #mic-btn { margin-left: auto; background: rgba(99,179,237,0.15); border: 1px solid rgba(99,179,237,0.3); color: #63b3ed; padding: 4px 12px; border-radius: 20px; cursor: default; font-size: 11px; font-weight: 600; transition: all 0.2s; }
     #mic-btn:hover { background: rgba(99,179,237,0.25); }
     #mic-btn.active { background: rgba(252,92,101,0.2); border-color: rgba(252,92,101,0.4); color: #fc5c65; }
 
@@ -36,7 +44,7 @@
     .passive-sub-btn:hover { background: rgba(255,255,255,0.08); }
     .passive-sub-btn.active { background: rgba(159,122,234,0.25); border-color: rgba(159,122,234,0.5); color: #b794f4; }
     .passive-sub-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    #passive-capture-btn { display: none; margin-left: auto; background: rgba(99,179,237,0.15); border: 1px solid rgba(99,179,237,0.3); color: #63b3ed; padding: 4px 12px; border-radius: 20px; cursor: pointer; font-size: 11px; font-weight: 600; transition: all 0.2s; }
+    #passive-capture-btn { display: none; margin-left: auto; background: rgba(99,179,237,0.15); border: 1px solid rgba(99,179,237,0.3); color: #63b3ed; padding: 4px 12px; border-radius: 20px; cursor: default; font-size: 11px; font-weight: 600; transition: all 0.2s; }
     #passive-capture-btn.visible { display: block; }
     #passive-capture-btn:hover { background: rgba(99,179,237,0.25); }
     #passive-capture-btn.active { background: rgba(252,92,101,0.2); border-color: rgba(252,92,101,0.4); color: #fc5c65; }
@@ -185,6 +193,11 @@
     <button class="mode-btn active" id="manual-mode-btn" onclick="switchMode('manual')">&#127908; Manual</button>
     <button class="mode-btn" id="passive-mode-btn" onclick="switchMode('passive')">&#128065; Passive</button>
     <button class="mode-btn" id="screen-mode-btn" onclick="switchMode('screen')">&#128421; Screen Analyzer</button>
+    <select id="style-switcher" title="Answer style — how spoken answers are phrased" onchange="changeResponseStyle(this.value)">
+      <option value="conversational">&#128172; Human</option>
+      <option value="balanced">&#9878; Balanced</option>
+      <option value="structured">&#128203; Points</option>
+    </select>
   </div>
   <div id="titlebar"><div class="win-btns">
     <button class="win-btn btn-set" onclick="openKnowledgeBase()" title="Knowledge Base" style="background: #a78bfa; color: #2d1b69;">&#128218;</button>
@@ -205,7 +218,12 @@ const LOCAL_OMNIROUTE_NO_AUTH = '__local_omniroute_no_auth__';
 let providerKeys = { gemini: [], groq: [], cerebras: [], deepseek: [], digitalocean: [] };
 // Sticky pointer to the last working account index per provider (advances on failure).
 let keyIndexByProvider = {};
-let sttModel = 'whisper-large-v3-turbo'; // Groq Whisper model used for voice transcription
+// Speech-to-Text routing — user-configurable primary + fallback (each provider+model).
+let sttPrimary = { provider: 'groq', model: 'whisper-large-v3-turbo' };
+let sttFallback = { provider: '', model: '' };
+// Valid STT models per provider (used to coerce/validate saved config).
+const STT_MODELS = { groq: ['whisper-large-v3-turbo', 'whisper-large-v3'], deepgram: ['nova-3', 'nova-2'] };
+let responseStyle = 'conversational';    // Answer phrasing: 'conversational' | 'balanced' | 'structured'
 let resumeContext = '', jobContext = '';
 // Routing config - holds primary + fallback for text and vision
 let routing = {
@@ -223,7 +241,7 @@ let passiveLevelHistory = [], passiveSpeaking = false, passiveSilenceFrames = 0,
 // Auto = VAD-driven (today's flow). Manual = continuous record until user clicks Stop.
 let passiveSubMode = 'auto', passiveManualRecording = false, passiveManualChunks = [], passiveManualRecorder = null, passiveManualUserStop = false;
 let screenCaptureInterval = null, screenLastText = '', screenProcessing = false, screenStitcherBuffer = '', screenStitcherTimer = null, screenProcessedQuestions = [], screenCaptureIntervalMs = 4000;
-const SILENCE_THRESHOLD_MS = 2500, MIN_AUDIO_SIZE = 4096, SPEECH_VOLUME_THRESHOLD = 25;
+const SILENCE_THRESHOLD_MS = 2500, MIN_AUDIO_SIZE = 8000, SPEECH_VOLUME_THRESHOLD = 25;
 
 // ===== PERSISTENT MEMORY =====
 // Separate from conversationHistory — stores every Q+A pair with metadata
@@ -337,8 +355,11 @@ async function reloadConfig() {
   digitaloceanApiKey = providerKeys.digitalocean[0] || '';
   omniRouteApiKey = config.omniRouteApiKey || '';
   omniRouteBaseUrl = config.omniRouteBaseUrl || 'http://127.0.0.1:20128/v1';
-  sttModel = config.sttModel || 'whisper-large-v3-turbo';
-  if (sttModel !== 'whisper-large-v3-turbo' && sttModel !== 'whisper-large-v3') sttModel = 'whisper-large-v3-turbo';
+  var sttRoute = normalizeSttRouting(config);
+  sttPrimary = sttRoute.primary;
+  sttFallback = sttRoute.fallback;
+  responseStyle = config.responseStyle || 'conversational';
+  if (responseStyle !== 'conversational' && responseStyle !== 'balanced' && responseStyle !== 'structured') responseStyle = 'conversational';
   resumeContext = config.resumeContext || '';
   jobContext = config.jobContext || '';
   if (config.routing) {
@@ -347,11 +368,40 @@ async function reloadConfig() {
     if (config.routing.visionPrimary) routing.visionPrimary = config.routing.visionPrimary;
     if (config.routing.visionFallback) routing.visionFallback = config.routing.visionFallback;
   }
+  // Auto-upgrade deprecated Groq text chat models (Groq shut down its Llama chat
+  // models) so a stale saved config can never send a dead model to the API.
+  var DEPRECATED_GROQ_TEXT = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'meta-llama/llama-4-scout-17b-16e-instruct', 'meta-llama/llama-4-maverick-17b-128e-instruct'];
+  ['textPrimary', 'textFallback'].forEach(function(k) {
+    var r = routing[k];
+    if (r && r.provider === 'groq' && DEPRECATED_GROQ_TEXT.indexOf(r.model) !== -1) {
+      r.model = 'openai/gpt-oss-120b';
+    }
+  });
   if (config.screenCaptureInterval) screenCaptureIntervalMs = Math.max(1000, Math.min(10000, config.screenCaptureInterval * 1000));
 
   // Show warning if primary text provider has no usable credential/gateway.
   var primaryKey = getKeyForProvider(routing.textPrimary.provider);
   document.getElementById('api-warning').style.display = primaryKey ? 'none' : 'block';
+
+  // Keep the compact main-window style switcher in sync with the saved value.
+  var styleSwitcher = document.getElementById('style-switcher');
+  if (styleSwitcher) styleSwitcher.value = responseStyle;
+}
+
+// Switch answer style from the main window without opening Settings. Persists to
+// the same config file (merged, so no other setting is lost) so it survives
+// restarts and stays in sync with the Settings screen. Prompt-only change → no
+// added latency to responses.
+async function changeResponseStyle(val) {
+  if (val !== 'conversational' && val !== 'balanced' && val !== 'structured') val = 'conversational';
+  responseStyle = val;
+  try {
+    var cfg = await ipcRenderer.invoke('load-config');
+    cfg.responseStyle = val;
+    ipcRenderer.send('save-config', cfg);
+  } catch (e) {
+    console.warn('[style-switcher] could not persist response style:', e && e.message);
+  }
 }
 
 // Build a system prompt with optional resume/job context that grounds the AI as the candidate
@@ -391,7 +441,8 @@ function normalizeProviderKeys(config) {
     groq: pick('groq', config.apiKey),
     deepseek: pick('deepseek', config.deepseekApiKey),
     cerebras: pick('cerebras', config.cerebrasApiKey),
-    digitalocean: pick('digitalocean', config.digitaloceanApiKey)
+    digitalocean: pick('digitalocean', config.digitaloceanApiKey),
+    deepgram: pick('deepgram', config.deepgramApiKey)
   };
 }
 
@@ -408,6 +459,31 @@ function getKeysForProvider(provider) {
 // First configured key for a provider — used for UI gates / status checks.
 function getKeyForProvider(provider) {
   return getKeysForProvider(provider)[0] || '';
+}
+
+// Coerce an STT model to a valid id for its provider.
+function coerceSttModel(provider, model) {
+  if (!provider) return '';
+  var list = STT_MODELS[provider] || [];
+  return list.indexOf(model) !== -1 ? model : (list[0] || '');
+}
+
+// Build STT primary/fallback routing from config, migrating the legacy
+// sttProvider/sttModel/deepgramModel fields when the new sttRouting is absent.
+function normalizeSttRouting(config) {
+  var r = config && config.sttRouting;
+  if (r && r.primary && (r.primary.provider === 'groq' || r.primary.provider === 'deepgram')) {
+    var fbP = (r.fallback && (r.fallback.provider === 'groq' || r.fallback.provider === 'deepgram')) ? r.fallback.provider : '';
+    return {
+      primary: { provider: r.primary.provider, model: coerceSttModel(r.primary.provider, r.primary.model) },
+      fallback: { provider: fbP, model: fbP ? coerceSttModel(fbP, r.fallback.model) : '' }
+    };
+  }
+  // Legacy migration (preserves prior behavior: Deepgram primary → Groq fallback; Groq primary → none).
+  var lp = (config && config.sttProvider === 'deepgram') ? 'deepgram' : 'groq';
+  var lm = lp === 'deepgram' ? coerceSttModel('deepgram', config && config.deepgramModel) : coerceSttModel('groq', config && config.sttModel);
+  var lf = lp === 'deepgram' ? { provider: 'groq', model: coerceSttModel('groq', '') } : { provider: '', model: '' };
+  return { primary: { provider: lp, model: lm }, fallback: lf };
 }
 
 // ===== MODE SWITCHING =====
@@ -1201,6 +1277,10 @@ function toggleManualCapture() {
 // ===== MANUAL MODE =====
 async function startAudioRecording(){
   try{
+    // Close any prior AudioContext before creating a new one. Manual mode
+    // re-invokes this after every utterance, and browsers cap live AudioContexts
+    // (~6) — without this, Manual mode silently dies after a few questions.
+    if(audioContext){try{audioContext.close();}catch(e){}audioContext=null;}
     var stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
     audioContext=new AudioContext();
     analyser=audioContext.createAnalyser();
@@ -1219,9 +1299,9 @@ async function startAudioRecording(){
       var blob=new Blob(audioChunks,{type:mimeType});
       stream.getTracks().forEach(function(t){t.stop();});
       if(blob.size>MIN_AUDIO_SIZE)await processManualAudio(blob,mimeType);
-      else if(isListening&&!isProcessing)setTimeout(startAudioRecording,500);
+      else if(isListening&&!isProcessing){setStatus('Too short — speak a bit longer');setTimeout(startAudioRecording,500);}
     };
-    mediaRecorder.start(500);
+    mediaRecorder.start(250);
     monitorManualAudio();
     setStatus('Listening...');
     return true;
@@ -1289,30 +1369,77 @@ async function streamProviderWithRotation(provider, model, messages, systemPromp
   return { error: { message: 'All ' + keys.length + ' ' + provider + ' account(s) failed. Last: ' + (lastError ? lastError.message : 'unknown') }, allKeysFailed: true };
 }
 
-// Transcribe audio via Groq Whisper, rotating across Groq accounts on failure.
+// Transcribe audio using the user-configured STT routing: try the PRIMARY
+// (provider + model), rotating across that provider's accounts; if it fails,
+// try the FALLBACK (provider + model), rotating across its accounts too.
+// Both are fully user-selectable in Settings (either provider can be primary
+// or fallback, or fallback can be None).
 async function transcribeWithRotation(b64, mimeType) {
-  var keys = getKeysForProvider('groq');
-  if (!keys.length) {
-    return { error: { message: 'Groq API key required for voice transcription. Add it in Settings.' } };
-  }
-  var start = keyIndexByProvider['groq'] || 0;
-  if (start >= keys.length) start = 0;
-  var lastError = null;
-  for (var attempt = 0; attempt < keys.length; attempt++) {
-    var idx = (start + attempt) % keys.length;
-    if (keys.length > 1) setStatus('Transcribing (account ' + (idx + 1) + '/' + keys.length + ')...');
-    var r = await ipcRenderer.invoke('transcribe-audio', {
-      apiKey: keys[idx], audioData: b64, mimeType: mimeType || 'audio/webm;codecs=opus', model: sttModel
-    });
-    if (!r.error) {
-      keyIndexByProvider['groq'] = idx;
-      return r;
+  var mime = mimeType || 'audio/webm;codecs=opus';
+  // Approx decoded byte size of the audio (base64 is ~4/3 of the raw bytes),
+  // surfaced in the Usage panel so tiny/short clips are easy to spot.
+  var approxKB = Math.floor((b64 ? b64.length : 0) * 3 / 4) / 1024;
+  var shortMime = ((mime.split(';')[0].split('/')[1]) || 'webm');
+  var sttDetail = approxKB.toFixed(1) + ' KB ' + shortMime;
+
+  // Ordered routes from the user's config: primary, then fallback. Skip empty
+  // providers and drop an exact duplicate (same provider + model).
+  var routes = [];
+  [sttPrimary, sttFallback].forEach(function(rt) {
+    if (rt && rt.provider && rt.model &&
+        !routes.some(function(x) { return x.provider === rt.provider && x.model === rt.model; })) {
+      routes.push({ provider: rt.provider, model: rt.model });
     }
-    lastError = r.error;
-    keyIndexByProvider['groq'] = (idx + 1) % keys.length;
-    if (keys.length > 1) console.warn('[key-rotation] groq (transcription) account ' + (idx + 1) + ' failed:', r.error.message);
+  });
+
+  var lastError = null;
+  var anyKeys = false;
+
+  for (var pi = 0; pi < routes.length; pi++) {
+    var provider = routes[pi].provider;
+    var model = routes[pi].model;
+    var keys = getKeysForProvider(provider);
+    if (!keys.length) continue;
+    anyKeys = true;
+
+    var start = keyIndexByProvider[provider] || 0;
+    if (start >= keys.length) start = 0;
+    var label = provider === 'deepgram' ? 'Deepgram' : 'Groq';
+    var isFallback = (pi > 0);
+
+    for (var attempt = 0; attempt < keys.length; attempt++) {
+      var idx = (start + attempt) % keys.length;
+      setStatus('Transcribing via ' + label +
+        (isFallback ? ' (fallback)' : '') +
+        (keys.length > 1 ? ' — account ' + (idx + 1) + '/' + keys.length : '') + '...');
+
+      var r;
+      if (provider === 'deepgram') {
+        r = await ipcRenderer.invoke('transcribe-audio-deepgram', {
+          apiKey: keys[idx], audioData: b64, mimeType: mime, model: model
+        });
+      } else {
+        r = await ipcRenderer.invoke('transcribe-audio', {
+          apiKey: keys[idx], audioData: b64, mimeType: mime, model: model
+        });
+      }
+
+      if (!r.error) {
+        keyIndexByProvider[provider] = idx;
+        trackTranscription(provider, model, true, null, sttDetail);
+        return r;
+      }
+      lastError = r.error;
+      keyIndexByProvider[provider] = (idx + 1) % keys.length;
+      trackTranscription(provider, model, false, r.error && r.error.message, sttDetail);
+      console.warn('[stt] ' + provider + ' account ' + (idx + 1) + ' failed:', r.error.message);
+    }
   }
-  return { error: lastError || { message: 'All Groq account(s) failed for transcription.' } };
+
+  if (!anyKeys) {
+    return { error: { message: 'No transcription API key configured for your selected STT provider(s). Add a Groq or Deepgram key in Settings.' } };
+  }
+  return { error: lastError || { message: 'All configured transcription providers failed.' } };
 }
 
 // Try the primary provider (rotating its accounts); if every primary account
@@ -1558,6 +1685,12 @@ function classifyQuestion(q) {
     return 'system_design';
   }
 
+  // behavioral / scenario: needs a natural STAR-style spoken story (routed to
+  // 'detailed' so it gets enough tokens + the "practical example" length guidance).
+  if (/\b(tell me about a time|describe a (time|situation|challenge|project|conflict)|give me an example|have you ever|walk me through a (time|situation|project)|a time when|situation where|how did you (handle|deal|resolve|approach)|how would you (handle|deal|approach)|difficult (situation|team|colleague|stakeholder|customer|client|conversation)|disagree|conflict with|tight deadline|under pressure|went wrong|failed|mistake you)\b/.test(t)) {
+    return 'detailed';
+  }
+
   // coding_explanation: deep technical / JVM / GC / internals / compare concepts
   if (/\b(garbage collect|jvm|classload|bytecode|weak ref|soft ref|phantom ref|finaliz|memory model|happens.before|volatile|synchronized|reentrant|fork.join|completable.future|reactor|webflux|hibernate.*(intern|cache|lazy|fetch)|spring.*(aop|proxy|cglib|bean lifecycle)|kubernetes.*(deploy|pod|service|ingress|configmap|secret)|docker.*(layer|network|volume)|explain.*vs|compare.*vs|difference between|how does .* work internally)\b/.test(t)) {
     return 'coding_explanation';
@@ -1577,6 +1710,27 @@ function classifyQuestion(q) {
   return 'normal';
 }
 
+// User-selectable answer phrasing. This is injected into the system prompt only —
+// it triggers NO extra API calls and adds NO latency to the streamed response.
+var RESPONSE_STYLES = {
+  conversational:
+    'RESPONSE STYLE — CONVERSATIONAL (sound like a real person speaking in a live interview):\n' +
+    '- Deliver the answer as natural, flowing spoken English in full sentences — NOT as a list.\n' +
+    '- No bullet points, dashes, numbered lists, headings, or section labels. (Only exception: a system-design/architecture question may use a few short bullets for components and trade-offs.)\n' +
+    '- For scenario or behavioral questions, answer as a short spoken story using the STAR flow (the situation, what you did, and the result) woven into natural sentences — never label those parts.\n' +
+    '- Use contractions (I\'ve, I\'d, that\'s) and vary sentence length so it sounds human, not templated.\n' +
+    '- Sound calm and confident, like you are talking to the interviewer, not reciting notes.',
+  balanced:
+    'RESPONSE STYLE — BALANCED:\n' +
+    '- Open with 1–2 natural first-person sentences, then use a few SHORT bullet points ONLY when listing distinct items genuinely improves clarity.\n' +
+    '- Keep it conversational; avoid headings or section labels.\n' +
+    '- For scenario or behavioral questions, prefer natural STAR-style narrative over bullets.',
+  structured:
+    'RESPONSE STYLE — CONCISE / POINTS:\n' +
+    '- Lead with one short framing sentence, then give crisp, tight points for fast recall.\n' +
+    '- Stay in first person; keep each point to a single line. Avoid headings or section labels.'
+};
+
 function buildAdaptiveSystemPrompt(classification, baseContext) {
   var lengthGuidance = {
     quick:             'Answer in 4–6 clear lines. Be direct, no fluff.',
@@ -1586,6 +1740,8 @@ function buildAdaptiveSystemPrompt(classification, baseContext) {
     system_design:     'Give a structured answer with key components, trade-offs, and steps. Use short bullet points only for system design or architecture. Include real-world considerations.'
   };
 
+  var styleGuidance = RESPONSE_STYLES[responseStyle] || RESPONSE_STYLES.conversational;
+
   var systemPrompt = `You are a real-time interview assistant for software engineering interviews.
 Answer as a confident candidate with 3 years of experience in Java, Spring Boot, Microservices, AWS, SQL, React, Angular, Docker, and Kubernetes.
 
@@ -1594,10 +1750,10 @@ RULES:
 - Never repeat the question back.
 - Always answer in English only, regardless of the language the question is asked in. Never reply in Hindi or any other language.
 - Speak in first person, natural English with contractions (I've, I'd, I'm, that's).
-- Do not add bullet points unless the question is about system design or architecture.
 - Do not provide code unless the interviewer specifically asks for code.
-- Do not add headings or section labels.
 - End the answer cleanly — no "I hope that helps" or summary restatements.
+
+${styleGuidance}
 
 LENGTH GUIDANCE: ${lengthGuidance[classification] || lengthGuidance.normal}`;
 
@@ -1634,6 +1790,32 @@ function trackUsage(data) {
   renderUsagePanel();
 }
 
+// Log a speech-to-text attempt into the SAME Usage panel (stats + log) as chat/
+// vision calls, so transcription activity and errors are visible in the main
+// window. Uses a '<provider>-stt' key so STT shows on its own row. `detail`
+// carries the audio size (e.g. "3.9 KB webm") to help spot short/invalid clips.
+function trackTranscription(provider, model, ok, errorMsg, detail) {
+  var p = (provider || 'stt') + '-stt';
+  if (!usageByProvider[p]) {
+    usageByProvider[p] = { calls: 0, promptTokens: 0, compTokens: 0, totalTokens: 0 };
+  }
+  usageByProvider[p].calls++;
+  activeProvider = p;
+
+  usageLog.unshift({
+    time: new Date().toLocaleTimeString(),
+    provider: p,
+    model: model || '',
+    tokens: 0,
+    estimated: false,
+    error: ok ? null : (errorMsg || 'unknown transcription error'),
+    detail: detail || ''
+  });
+  if (usageLog.length > 50) usageLog.length = 50;
+
+  renderUsagePanel();
+}
+
 function renderUsagePanel() {
   var statsEl = document.getElementById('usage-stats');
   var logEl = document.getElementById('usage-log');
@@ -1656,10 +1838,19 @@ function renderUsagePanel() {
         statusClass = 'provider-fallback';
         statusText = 'Fallback';
       }
+      var isStt = p.slice(-4) === '-stt';
+      var dispName;
+      if (isStt) {
+        var base = p.slice(0, -4);
+        dispName = (base === 'deepgram' ? 'Deepgram' : base.charAt(0).toUpperCase() + base.slice(1)) + ' (STT)';
+      } else if (p === 'digitalocean') { dispName = 'DigitalOcean'; }
+      else if (p === 'omniroute') { dispName = 'OmniRoute'; }
+      else { dispName = p.charAt(0).toUpperCase() + p.slice(1); }
+
       html += '<tr>';
-      html += '<td class="provider-name">' + (p === 'digitalocean' ? 'DigitalOcean' : p === 'omniroute' ? 'OmniRoute' : p.charAt(0).toUpperCase() + p.slice(1)) + '</td>';
+      html += '<td class="provider-name">' + dispName + '</td>';
       html += '<td>' + d.calls + '</td>';
-      html += '<td class="tokens-used">' + d.totalTokens.toLocaleString() + (d.estimated ? '~' : '') + '</td>';
+      html += '<td class="tokens-used">' + (isStt ? '—' : (d.totalTokens.toLocaleString() + (d.estimated ? '~' : ''))) + '</td>';
       html += '<td class="' + statusClass + '">' + statusText + '</td>';
       html += '</tr>';
     }
@@ -1677,9 +1868,10 @@ function renderUsagePanel() {
     logHtml += '<span style="color:#4a5568;">' + e.time + '</span> ';
     logHtml += '<span class="log-provider">' + e.provider + '</span> ';
     logHtml += e.error
-      ? '<span class="log-error">✗ ' + escapeHtml(e.error.substring(0, 60)) + '</span>'
-      : '<span class="log-tokens">' + e.tokens.toLocaleString() + ' tok</span>';
-    logHtml += ' <span style="color:#4a5568;">' + e.model + '</span>';
+      ? '<span class="log-error">✗ ' + escapeHtml(String(e.error).substring(0, 80)) + '</span>'
+      : '<span class="log-tokens">' + (e.detail ? escapeHtml(e.detail) : (e.tokens.toLocaleString() + ' tok')) + '</span>';
+    logHtml += ' <span style="color:#4a5568;">' + escapeHtml(e.model || '') + '</span>';
+    if (e.error && e.detail) logHtml += ' <span style="color:#718096;">' + escapeHtml(e.detail) + '</span>';
     if (e.estimated) logHtml += ' <span style="color:#718096;">(est)</span>';
     logHtml += '</div>';
   }

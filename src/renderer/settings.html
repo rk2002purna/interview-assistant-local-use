@@ -5,6 +5,8 @@
   <title>Settings — Interview Assistant</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    /* Stealth: normal arrow cursor on all interactive elements (see main window). */
+    button, a, select, label, summary, [onclick], [role="button"] { cursor: default !important; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: #0d1117;
@@ -147,16 +149,47 @@
     <p class="hint">Gemini and Groq provide known vision models. OmniRoute also works when you select a vision-capable route/model from its discovered catalog.</p>
   </div>
 
-  <div class="section" id="stt-section">
-    <h2>🎙 Speech-to-Text Model (Voice → Text)</h2>
-    <label>Transcription model (Manual &amp; Passive modes)</label>
-    <select id="stt-model">
-      <option value="whisper-large-v3-turbo">⚡ whisper-large-v3-turbo — Fast &amp; low cost (recommended)</option>
-      <option value="whisper-large-v3">whisper-large-v3 — Most accurate</option>
+  <div class="section" id="answer-style-section">
+    <h2>🗣 Answer Style (how spoken answers sound)</h2>
+    <label>Response style</label>
+    <select id="response-style">
+      <option value="conversational">💬 Conversational — natural, human, spoken (recommended)</option>
+      <option value="balanced">⚖️ Balanced — natural prose with a few points when useful</option>
+      <option value="structured">📋 Concise / Points — crisp points for fast recall</option>
     </select>
     <p class="hint">
-      Speech-to-text runs on Groq's Whisper API (uses your Groq API key) and is pinned to English. Turbo is
-      fastest and cheapest ($0.04/hr); large-v3 is the most accurate ($0.111/hr).
+      Controls how voice-question answers are phrased. <strong>Conversational</strong> makes scenario &amp;
+      behavioral answers flow like a real person (STAR woven into sentences, no bullet dumps). This only
+      changes the prompt wording, so it adds <strong>no response delay</strong>.
+    </p>
+  </div>
+
+  <div class="section" id="stt-section">
+    <h2>🎙 Speech-to-Text (Voice → Text)</h2>
+    <label>Primary provider (Manual &amp; Passive modes)</label>
+    <select id="stt-primary-provider" onchange="updateSttModelDropdown('stt-primary')">
+      <option value="groq">🟠 Groq Whisper</option>
+      <option value="deepgram">🟢 Deepgram Nova</option>
+    </select>
+    <br/>
+    <label>Primary model</label>
+    <select id="stt-primary-model"></select>
+
+    <br/>
+    <label>Fallback provider <span style="color:#4a5568">(used if primary fails)</span></label>
+    <select id="stt-fallback-provider" onchange="updateSttModelDropdown('stt-fallback')">
+      <option value="">— None —</option>
+      <option value="groq">🟠 Groq Whisper</option>
+      <option value="deepgram">🟢 Deepgram Nova</option>
+    </select>
+    <br/>
+    <label>Fallback model</label>
+    <select id="stt-fallback-model"></select>
+
+    <p class="hint">
+      Transcription tries the <strong>primary</strong> first; if it fails (rate limit, quota, outage),
+      it automatically tries the <strong>fallback</strong>. You can set either provider as primary or
+      fallback. English is pinned. Add the matching API key(s) below (Groq and/or Deepgram).
     </p>
   </div>
 
@@ -192,6 +225,16 @@
     <button type="button" class="add-key-btn" style="background:rgba(99,179,237,0.12);border:1px solid rgba(99,179,237,0.3);color:#63b3ed;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;" onclick="addKeyRow('groq-keys','gsk_...')">➕ Add account</button>
     <p class="hint">
       Get a free key at <a href="#" onclick="openExternal('https://console.groq.com')">console.groq.com</a> — used for voice-to-text and optionally for chat/vision.
+    </p>
+  </div>
+
+  <div class="section" id="deepgram-section">
+    <h2>🟢 Deepgram API Keys</h2>
+    <label>Deepgram accounts — used for voice transcription only (auto-rotated on limit)</label>
+    <div id="deepgram-keys" class="key-list"></div>
+    <button type="button" class="add-key-btn" style="background:rgba(99,179,237,0.12);border:1px solid rgba(99,179,237,0.3);color:#63b3ed;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;" onclick="addKeyRow('deepgram-keys','Deepgram API key')">➕ Add account</button>
+    <p class="hint">
+      Get a free key ($200 non-expiring credit, no credit card) at <a href="#" onclick="openExternal('https://console.deepgram.com')">console.deepgram.com</a> — stored locally on your machine only.
     </p>
   </div>
 
@@ -284,10 +327,8 @@
     },
     groq: {
       text: [
-        { id: 'llama-3.3-70b-versatile', label: '⚡ llama-3.3-70b-versatile (recommended)' },
-        { id: 'llama-3.1-8b-instant', label: '🪶 llama-3.1-8b-instant — Fastest' },
-        { id: 'meta-llama/llama-4-scout-17b-16e-instruct', label: 'llama-4-scout-17b' },
-        { id: 'meta-llama/llama-4-maverick-17b-128e-instruct', label: 'llama-4-maverick-17b' }
+        { id: 'openai/gpt-oss-120b', label: '⚡ openai/gpt-oss-120b — Best quality (recommended)' },
+        { id: 'openai/gpt-oss-20b', label: '🪶 openai/gpt-oss-20b — Fastest (~1000 tok/s)' }
       ],
       vision: [
         { id: 'meta-llama/llama-4-scout-17b-16e-instruct', label: '⚡ llama-4-scout-17b (recommended for vision)' },
@@ -444,8 +485,85 @@
       groq: pick('groq', config.apiKey),
       deepseek: pick('deepseek', config.deepseekApiKey),
       cerebras: pick('cerebras', config.cerebrasApiKey),
-      digitalocean: pick('digitalocean', config.digitaloceanApiKey)
+      digitalocean: pick('digitalocean', config.digitaloceanApiKey),
+      deepgram: pick('deepgram', config.deepgramApiKey)
     };
+  }
+
+  // Speech-to-Text model catalog per provider (separate from the chat MODEL_CATALOG).
+  var STT_MODEL_CATALOG = {
+    groq: [
+      { id: 'whisper-large-v3-turbo', label: '⚡ whisper-large-v3-turbo — Fast & low cost' },
+      { id: 'whisper-large-v3', label: 'whisper-large-v3 — Most accurate' }
+    ],
+    deepgram: [
+      { id: 'nova-3', label: '⚡ nova-3 — Latest, fastest & most accurate' },
+      { id: 'nova-2', label: 'nova-2 — Previous generation' }
+    ]
+  };
+
+  function populateSttModels(selectId, provider) {
+    var sel = document.getElementById(selectId);
+    if (!sel) return;
+    sel.innerHTML = '';
+    var list = STT_MODEL_CATALOG[provider] || [];
+    if (!provider || !list.length) {
+      sel.disabled = true;
+      var opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = provider ? '(no models)' : '(no fallback)';
+      sel.appendChild(opt);
+      return;
+    }
+    sel.disabled = false;
+    list.forEach(function(m) {
+      var o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = m.label;
+      sel.appendChild(o);
+    });
+  }
+
+  // prefix is 'stt-primary' or 'stt-fallback'
+  function updateSttModelDropdown(prefix) {
+    var provider = document.getElementById(prefix + '-provider').value;
+    populateSttModels(prefix + '-model', provider);
+  }
+
+  // First valid model id for a provider (used as a default).
+  function defaultSttModel(provider) {
+    var list = STT_MODEL_CATALOG[provider] || [];
+    return list.length ? list[0].id : '';
+  }
+
+  // Coerce a route's model to a valid id for its provider.
+  function coerceSttModel(provider, model) {
+    if (!provider) return '';
+    var list = STT_MODEL_CATALOG[provider] || [];
+    return list.some(function(m) { return m.id === model; }) ? model : defaultSttModel(provider);
+  }
+
+  // Build the STT primary/fallback routing from config, migrating the legacy
+  // single-provider fields (sttProvider/sttModel/deepgramModel) when needed.
+  function normalizeSttRoutingForSettings(config) {
+    var r = config && config.sttRouting;
+    if (r && r.primary && (r.primary.provider === 'groq' || r.primary.provider === 'deepgram')) {
+      var fbProvider = (r.fallback && (r.fallback.provider === 'groq' || r.fallback.provider === 'deepgram')) ? r.fallback.provider : '';
+      return {
+        primary: { provider: r.primary.provider, model: coerceSttModel(r.primary.provider, r.primary.model) },
+        fallback: { provider: fbProvider, model: fbProvider ? coerceSttModel(fbProvider, r.fallback.model) : '' }
+      };
+    }
+    // Legacy migration
+    var legacyProvider = (config.sttProvider === 'deepgram') ? 'deepgram' : 'groq';
+    var legacyModel = legacyProvider === 'deepgram'
+      ? coerceSttModel('deepgram', config.deepgramModel)
+      : coerceSttModel('groq', config.sttModel);
+    // Preserve prior behavior: Deepgram primary previously fell back to Groq; Groq primary had no fallback.
+    var legacyFallback = legacyProvider === 'deepgram'
+      ? { provider: 'groq', model: defaultSttModel('groq') }
+      : { provider: '', model: '' };
+    return { primary: { provider: legacyProvider, model: legacyModel }, fallback: legacyFallback };
   }
 
   function makeKeyRow(value, placeholder) {
@@ -504,13 +622,26 @@
     renderKeyRows('deepseek-keys', pk.deepseek, 'sk-...');
     renderKeyRows('cerebras-keys', pk.cerebras, 'csk-...');
     renderKeyRows('digitalocean-keys', pk.digitalocean, 'dop_v1_...');
+    renderKeyRows('deepgram-keys', pk.deepgram, 'Deepgram API key');
     document.getElementById('omniroute-base-url').value = config.omniRouteBaseUrl || 'http://127.0.0.1:20128/v1';
     if (config.omniRouteApiKey) document.getElementById('omniroute-api-key').value = config.omniRouteApiKey;
 
-    // Speech-to-Text model (coerce any removed/unknown value to the recommended turbo)
-    var savedStt = config.sttModel || 'whisper-large-v3-turbo';
-    if (savedStt !== 'whisper-large-v3-turbo' && savedStt !== 'whisper-large-v3') savedStt = 'whisper-large-v3-turbo';
-    document.getElementById('stt-model').value = savedStt;
+    // Speech-to-Text routing (primary + fallback). Migrates the legacy
+    // sttProvider/sttModel/deepgramModel fields if the new sttRouting is absent.
+    var sttRouting = normalizeSttRoutingForSettings(config);
+
+    document.getElementById('stt-primary-provider').value = sttRouting.primary.provider;
+    updateSttModelDropdown('stt-primary');
+    document.getElementById('stt-primary-model').value = sttRouting.primary.model;
+
+    document.getElementById('stt-fallback-provider').value = sttRouting.fallback.provider || '';
+    updateSttModelDropdown('stt-fallback');
+    if (sttRouting.fallback.model) document.getElementById('stt-fallback-model').value = sttRouting.fallback.model;
+
+    // Answer style (coerce unknown to conversational)
+    var savedStyle = config.responseStyle || 'conversational';
+    if (savedStyle !== 'conversational' && savedStyle !== 'balanced' && savedStyle !== 'structured') savedStyle = 'conversational';
+    document.getElementById('response-style').value = savedStyle;
 
     // Other config
     if (config.resumeContext) document.getElementById('resume-context').value = config.resumeContext;
@@ -522,6 +653,14 @@
     const textFallback = routing.textFallback || { provider: '', model: '' };
     const visionPrimary = routing.visionPrimary || { provider: 'gemini', model: 'gemini-flash-latest' };
     const visionFallback = routing.visionFallback || { provider: '', model: '' };
+
+    // Auto-migrate deprecated Groq text chat models → gpt-oss-120b (Groq shut down its Llama chat models).
+    var DEPRECATED_GROQ_TEXT = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'meta-llama/llama-4-scout-17b-16e-instruct', 'meta-llama/llama-4-maverick-17b-128e-instruct'];
+    [textPrimary, textFallback].forEach(function(route) {
+      if (route && route.provider === 'groq' && DEPRECATED_GROQ_TEXT.indexOf(route.model) !== -1) {
+        route.model = 'openai/gpt-oss-120b';
+      }
+    });
 
     [textPrimary, textFallback, visionPrimary, visionFallback].forEach(function(route) {
       if (route.provider === 'omniroute') ensureOmniRouteModel(route.model);
@@ -573,7 +712,8 @@
       groq: collectKeys('groq-keys'),
       deepseek: collectKeys('deepseek-keys'),
       cerebras: collectKeys('cerebras-keys'),
-      digitalocean: collectKeys('digitalocean-keys')
+      digitalocean: collectKeys('digitalocean-keys'),
+      deepgram: collectKeys('deepgram-keys')
     };
 
     const config = {
@@ -584,9 +724,20 @@
       deepseekApiKey: providerKeys.deepseek[0] || '',
       cerebrasApiKey: providerKeys.cerebras[0] || '',
       digitaloceanApiKey: providerKeys.digitalocean[0] || '',
+      deepgramApiKey: providerKeys.deepgram[0] || '',
       omniRouteBaseUrl: document.getElementById('omniroute-base-url').value.trim() || 'http://127.0.0.1:20128/v1',
       omniRouteApiKey: document.getElementById('omniroute-api-key').value.trim(),
-      sttModel: document.getElementById('stt-model').value,
+      sttRouting: {
+        primary: {
+          provider: document.getElementById('stt-primary-provider').value,
+          model: document.getElementById('stt-primary-model').value
+        },
+        fallback: {
+          provider: document.getElementById('stt-fallback-provider').value,
+          model: document.getElementById('stt-fallback-model').value
+        }
+      },
+      responseStyle: document.getElementById('response-style').value,
       resumeContext: document.getElementById('resume-context').value.trim(),
       jobContext: document.getElementById('job-context').value.trim(),
       routing: routing

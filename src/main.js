@@ -905,3 +905,91 @@ ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData, mimeType, 
     return { error: { message: 'Failed to process audio' } };
   }
 });
+
+// Deepgram speech-to-text (pre-recorded). Kept as a separate handler so the
+// existing Groq Whisper path above stays completely untouched. Deepgram uses a
+// raw-binary body + Token auth (not the OpenAI multipart form), so it needs its
+// own request. The renderer picks which handler to call and handles fallback.
+ipcMain.handle('transcribe-audio-deepgram', async (event, { apiKey, audioData, mimeType, model }) => {
+  // Whitelist the allowed Deepgram model IDs so the value interpolated into the
+  // request URL can't be anything unexpected.
+  const ALLOWED_DG_MODELS = ['nova-3', 'nova-2'];
+  const dgModel = ALLOWED_DG_MODELS.includes(model) ? model : 'nova-3';
+
+  // Derive file extension and content-type from the actual mimeType the recorder used.
+  const mime = mimeType || 'audio/webm;codecs=opus';
+  let ext = 'webm';
+  let contentType = 'audio/webm';
+  if (mime.startsWith('audio/ogg')) { ext = 'ogg'; contentType = 'audio/ogg'; }
+  else if (mime.startsWith('audio/mp4')) { ext = 'mp4'; contentType = 'audio/mp4'; }
+  else if (mime.startsWith('audio/webm')) { ext = 'webm'; contentType = 'audio/webm'; }
+
+  const tempPath = path.join(os.tmpdir(), 'interview-audio-dg-' + Date.now() + '.' + ext);
+
+  try {
+    const audioBuffer = Buffer.from(audioData, 'base64');
+    fs.writeFileSync(tempPath, audioBuffer);
+
+    // Guard: reject tiny/corrupt files before hitting the API
+    const fileSize = fs.statSync(tempPath).size;
+    if (fileSize < 1024) {
+      try { fs.unlinkSync(tempPath); } catch(e) {}
+      return { error: { message: 'Audio too short or empty — please speak clearly and try again.' } };
+    }
+
+    // Query params are part of a single arg string passed to spawn (no shell),
+    // so the '&' separators are safe and are not interpreted by a shell.
+    const url = 'https://api.deepgram.com/v1/listen?model=' + encodeURIComponent(dgModel) +
+      '&smart_format=true&punctuate=true&language=en';
+
+    return new Promise((resolve) => {
+      const curl = spawn('curl', [
+        '-s', url,
+        '-X', 'POST',
+        '-H', `Authorization: Token ${apiKey}`,
+        '-H', `Content-Type: ${contentType}`,
+        '--data-binary', `@${tempPath}`
+      ]);
+
+      let data = '';
+      let errorData = '';
+
+      curl.stdout.on('data', (chunk) => { data += chunk; });
+      curl.stderr.on('data', (chunk) => { errorData += chunk; });
+
+      curl.on('close', (code) => {
+        try { fs.unlinkSync(tempPath); } catch(e) {}
+
+        if (code !== 0) {
+          const errMsg = errorData ? errorData.trim() : 'curl exited with code ' + code;
+          resolve({ error: { message: 'Transcription failed: ' + errMsg } });
+          return;
+        }
+
+        try {
+          const json = JSON.parse(data);
+          // Deepgram error shape: { err_code, err_msg } (or { reason } on some 4xx).
+          if (json.err_code || json.err_msg || json.error) {
+            resolve({ error: { message: json.err_msg || json.error || json.reason || 'Deepgram error' } });
+            return;
+          }
+          const alt = json && json.results && json.results.channels &&
+            json.results.channels[0] && json.results.channels[0].alternatives &&
+            json.results.channels[0].alternatives[0];
+          const transcript = alt && typeof alt.transcript === 'string' ? alt.transcript : '';
+          resolve({ text: transcript.trim() });
+        } catch (e) {
+          resolve({ error: { message: 'Parse error: ' + data.substring(0, 200) } });
+        }
+      });
+
+      curl.on('error', (err) => {
+        try { fs.unlinkSync(tempPath); } catch(e) {}
+        resolve({ error: { message: 'curl not found — please install curl or check your PATH.' } });
+      });
+    });
+  } catch (e) {
+    try { fs.unlinkSync(tempPath); } catch(e) {}
+    return { error: { message: 'Failed to process audio' } };
+  }
+});
