@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const https = require('https');
+const { netHttpsRequest } = require('./electron-net-request');
 const { spawn } = require('child_process');
 const { readActiveWindowText } = require('./screen-reader');
 const {
@@ -227,7 +228,7 @@ ipcMain.handle('call-ai-api', async (event, { apiKey, model, messages, systemPro
       }
     };
 
-    const req = https.request(options, (res) => {
+    const req = netHttpsRequest(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
@@ -298,7 +299,7 @@ ipcMain.handle('call-deepseek-api', async (event, { apiKey, model, messages, sys
       }
     };
 
-    const req = https.request(options, (res) => {
+    const req = netHttpsRequest(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
@@ -408,7 +409,7 @@ ipcMain.handle('call-gemini-api', async (event, { apiKey, model, messages, syste
       }
     };
 
-    const req = https.request(options, (res) => {
+    const req = netHttpsRequest(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
@@ -506,7 +507,7 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
         }
       };
 
-      const req = https.request(options, (res) => {
+      const req = netHttpsRequest(options, (res) => {
         let buffer = '';
         let fullText = '';
         let errorMsg = null;
@@ -664,7 +665,7 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
       }
     };
 
-    const req = https.request(options, (res) => {
+    const req = netHttpsRequest(options, (res) => {
       let sseBuffer = '';
       let fullText = '';
       let errorMsg = null;

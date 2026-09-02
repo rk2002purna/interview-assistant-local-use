@@ -90,13 +90,14 @@ async function embedLocal(texts) {
 // DigitalOcean backend (OpenAI-compatible /v1/embeddings).
 // ---------------------------------------------------------------------------
 function httpsJsonPost(hostname, apiPath, bodyObj, headers) {
+  const { netHttpsRequest } = require('../../electron-net-request');
   return new Promise((resolve, reject) => {
     const buf = Buffer.from(JSON.stringify(bodyObj));
     const opts = {
       hostname, port: 443, path: apiPath, method: 'POST',
       headers: Object.assign({ 'Content-Type': 'application/json', 'Content-Length': buf.length }, headers || {})
     };
-    const req = https.request(opts, (res) => {
+    const req = netHttpsRequest(opts, (res) => {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', () => {
