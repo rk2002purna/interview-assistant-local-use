@@ -30,10 +30,31 @@ function netHttpsRequest(options, responseCallback) {
   // fully initialized; net.request itself is only invoked on user actions.
   const { net } = require('electron');
 
-  // Every caller used https.request on port 443. net.request does not infer
-  // the scheme from the port, so set the protocol explicitly.
-  const requestOptions = Object.assign({ protocol: 'https:' }, options);
-  const req = net.request(requestOptions);
+  // net.request is happiest with a full URL rather than Node's separate
+  // hostname/port/path fields (passing those the Node way can throw
+  // net::ERR_INVALID_ARGUMENT). Every caller used https on port 443.
+  const protocol = options.protocol || 'https:';
+  const host = options.hostname || options.host;
+  const port = options.port;
+  const path = options.path || '/';
+  const url = `${protocol}//${host}${port ? ':' + port : ''}${path}`;
+
+  const req = net.request({ method: options.method || 'GET', url });
+
+  // Electron requires header VALUES to be strings and computes Content-Length
+  // itself from the written body. Node tolerated a numeric Content-Length
+  // (bodyBuffer.length), but passing a non-string header value to net.request
+  // throws net::ERR_INVALID_ARGUMENT. So stringify every value and skip
+  // Content-Length (Chromium sets it correctly for the body we write).
+  if (options.headers) {
+    for (const name of Object.keys(options.headers)) {
+      if (name.toLowerCase() === 'content-length') continue;
+      const value = options.headers[name];
+      if (value !== undefined && value !== null) {
+        req.setHeader(name, String(value));
+      }
+    }
+  }
 
   if (typeof responseCallback === 'function') {
     req.on('response', responseCallback);
