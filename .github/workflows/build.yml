@@ -22,6 +22,10 @@ jobs:
           dir node_modules\apache-arrow
           echo "Checking for sharp nested semver..."
           dir node_modules\sharp
+          echo "Checking for onnxruntime-node win32 native binary (local embeddings)..."
+          dir node_modules\onnxruntime-node\bin\napi-v3\win32\x64\onnxruntime_binding.node
+          echo "Checking onnxruntime-node runtime DLLs are present next to the binding..."
+          dir node_modules\onnxruntime-node\bin\napi-v3\win32\x64\*.dll
       - run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
