@@ -171,6 +171,52 @@ function extractContent(value) {
   }).join('');
 }
 
+/**
+ * Recover assistant text from a complete response body when incremental SSE
+ * parsing produced nothing. Handles both a single non-streaming JSON object
+ * (gateways that ignore stream=true) and a fully buffered SSE body.
+ * Returns '' when no text is present.
+ */
+function recoverTextFromBody(rawBody) {
+  if (!rawBody) return '';
+
+  // Single non-streaming JSON object.
+  try {
+    const parsed = JSON.parse(rawBody);
+    const choice = parsed && parsed.choices && parsed.choices[0];
+    const text = extractContent(
+      (choice && choice.message && choice.message.content) ||
+      (choice && choice.delta && choice.delta.content) ||
+      (choice && choice.text)
+    );
+    if (text) return text;
+  } catch (_error) {
+    /* not one JSON object — fall through to an SSE re-parse */
+  }
+
+  // Fully buffered SSE body: concatenate every data: event's content.
+  let text = '';
+  for (const line of String(rawBody).split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) continue;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    try {
+      const parsed = JSON.parse(payload);
+      const choice = parsed.choices && parsed.choices[0];
+      if (!choice) continue;
+      text += extractContent(
+        (choice.delta && choice.delta.content) ||
+        (choice.message && choice.message.content) ||
+        choice.text
+      );
+    } catch (_error) {
+      /* ignore a partial/non-JSON line */
+    }
+  }
+  return text;
+}
+
 function sendRendererEvent(sender, channel, payload) {
   if (!sender || sender.isDestroyed()) return;
   sender.send(channel, payload);
@@ -226,6 +272,10 @@ function streamOmniRouteCompletion({
       let fullText = '';
       let streamUsage = null;
       let streamError = null;
+      let finishReason = null;
+      // Reasoning models (e.g. gpt-oss) stream their scratchpad separately; if
+      // the whole token budget goes there we get no answer text.
+      let reasoningChars = 0;
 
       const consumeEventLine = (line) => {
         const trimmed = line.trim();
@@ -243,7 +293,18 @@ function streamOmniRouteCompletion({
 
           const choice = parsed.choices && parsed.choices[0];
           if (!choice) return;
-          const deltaText = extractContent(choice.delta && choice.delta.content);
+          if (choice.finish_reason) finishReason = choice.finish_reason;
+          // Accept a full message object too: some gateways stream
+          // choices[0].message instead of an incremental delta.
+          const deltaText = extractContent(
+            (choice.delta && choice.delta.content) ||
+            (choice.message && choice.message.content) ||
+            choice.text
+          );
+          const reasoningText = extractContent(
+            choice.delta && (choice.delta.reasoning_content || choice.delta.reasoning)
+          );
+          if (reasoningText) reasoningChars += reasoningText.length;
           if (deltaText) {
             fullText += deltaText;
             sendRendererEvent(sender, 'ai-stream-chunk', { streamId, delta: deltaText });
@@ -288,21 +349,32 @@ function streamOmniRouteCompletion({
           return;
         }
 
-        // Some OpenAI-compatible gateways ignore stream=true and return one JSON object.
-        if (!fullText && rawBody && !rawBody.trimStart().startsWith('data:')) {
-          try {
-            const parsed = JSON.parse(rawBody);
-            streamUsage = streamUsage || parsed.usage || null;
-            const choice = parsed.choices && parsed.choices[0];
-            fullText = extractContent(choice && choice.message && choice.message.content);
-            if (fullText) {
-              sendRendererEvent(sender, 'ai-stream-chunk', { streamId, delta: fullText });
-            }
-          } catch (_error) {}
+        // Recover when live SSE parsing produced nothing: the gateway may have
+        // ignored stream=true and returned one JSON object, or buffered the
+        // entire SSE body so the incremental parse never saw the events.
+        if (!fullText && rawBody) {
+          const recovered = recoverTextFromBody(rawBody);
+          if (recovered) {
+            fullText = recovered;
+            sendRendererEvent(sender, 'ai-stream-chunk', { streamId, delta: fullText });
+          }
         }
 
         if (!fullText) {
-          const message = 'OmniRoute returned an empty response. Check the selected route/model in the OmniRoute dashboard.';
+          // Report the actual reason instead of a generic "empty response".
+          let message;
+          if (finishReason === 'length') {
+            message = 'OmniRoute hit the token limit before producing any answer' +
+              (reasoningChars ? ' (the model spent the budget on reasoning)' : '') +
+              '. Raise max tokens in Settings or select a non-reasoning model.';
+          } else if (reasoningChars) {
+            message = 'OmniRoute returned only reasoning tokens and no answer text. ' +
+              'Raise max tokens in Settings or select a non-reasoning model.';
+          } else {
+            const snippet = String(rawBody || '').trim().substring(0, 200);
+            message = 'OmniRoute returned an empty response. Check the selected route/model in the OmniRoute dashboard.' +
+              (snippet ? ' Response: ' + snippet : ' (no response body received)');
+          }
           sendRendererEvent(sender, 'ai-usage-update', {
             provider: 'omniroute', model, usage: {}, error: message
           });
