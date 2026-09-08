@@ -19,6 +19,8 @@
 
 const embeddings = require('./embeddingService');
 const vectorStore = require('./vectorStoreService');
+const lexicalStore = require('./lexicalStoreService');
+const { isNativeModuleError } = require('./nativeSupport');
 
 const TOP_K = 8;                 // retrieve top 8 chunks for better recall
 const MAX_CONTEXT_CHARS = 9000;  // hard cap (~2.2k tokens of context)
@@ -36,47 +38,79 @@ async function retrieveContext(question, opts) {
   opts = opts || {};
   if (!question || !question.trim()) return { usedRag: false, context: '', sources: [] };
 
-  // No index → caller falls back to the normal LLM flow (Feature 8.3).
-  if (!(await vectorStore.hasIndex())) {
-    console.log('[Knowledge] No index found — falling back to normal LLM flow.');
-    return { usedRag: false, context: '', sources: [] };
+  // Preferred path: semantic (vector) retrieval.
+  let vectorReady = false;
+  try {
+    vectorReady = await vectorStore.hasIndex();
+  } catch (e) {
+    vectorReady = false; // native store unusable on this machine
   }
 
+  if (vectorReady) {
+    try {
+      const qVec = await embeddings.embedQuery(question, { apiKey: opts.apiKey });
+      const results = await vectorStore.searchSimilar(qVec, TOP_K);
+      const built = buildContext(question, results, 'vector');
+      if (built) return built;
+      console.log('[Knowledge] Vector search produced no usable chunks — trying keyword index.');
+    } catch (e) {
+      if (!isNativeModuleError(e)) {
+        // A genuine retrieval error must never break the user's answer.
+        console.error('[Knowledge] Retrieval failed, falling back to normal LLM flow:', e.message);
+        return { usedRag: false, context: '', sources: [], error: e.message };
+      }
+      console.warn('[Knowledge] Native retrieval unavailable (%s) — trying keyword index.', e.message);
+    }
+  }
+
+  // Fallback path: pure-JS BM25 keyword retrieval (no native modules, no keys).
   try {
-    const qVec = await embeddings.embedQuery(question, { apiKey: opts.apiKey });
-    const results = await vectorStore.searchSimilar(qVec, TOP_K);
-    if (!results || results.length === 0) {
-      console.log('[Knowledge] Vector search returned no chunks — falling back to normal LLM flow.');
-      return { usedRag: false, context: '', sources: [] };
+    if (lexicalStore.hasIndex()) {
+      const results = lexicalStore.search(question, TOP_K);
+      const built = buildContext(question, results, 'keyword');
+      if (built) return built;
+      console.log('[Knowledge] Keyword search found no relevant chunks — falling back to normal LLM flow.');
+    } else if (!vectorReady) {
+      console.log('[Knowledge] No index found — falling back to normal LLM flow.');
     }
-
-    // Drop low-similarity hits and enforce the context character budget (Feature 15).
-    const good = results.filter(r => r.score >= MIN_SCORE);
-    const kept = [];
-    let total = 0;
-    for (const r of good) {
-      const piece = formatChunk(r);
-      if (total + piece.length > MAX_CONTEXT_CHARS && kept.length > 0) break; // budget hit
-      kept.push(r);
-      total += piece.length;
-      if (kept.length >= TOP_K) break;
-    }
-
-    if (kept.length === 0) {
-      console.log('[Knowledge] No chunks above similarity threshold (%d results, all below %s) — falling back.', results.length, MIN_SCORE);
-      return { usedRag: false, context: '', sources: [] };
-    }
-
-    const context = kept.map(formatChunk).join('\n---\n');
-    const sources = kept.map(r => ({ sourceFile: r.sourceFile, pageNumber: r.pageNumber, score: +r.score.toFixed(3) }));
-    console.log('[Knowledge] Retrieval query: "%s" → %d chunks retrieved (scores: %s).',
-      question.slice(0, 60), kept.length, sources.map(s => s.score).join(', '));
-    return { usedRag: true, context, sources };
   } catch (e) {
-    // Any retrieval/embedding error must never crash the user's answer (Feature 8.3 / 12).
-    console.error('[Knowledge] Retrieval failed, falling back to normal LLM flow:', e.message);
+    console.error('[Knowledge] Keyword retrieval failed, falling back to normal LLM flow:', e.message);
     return { usedRag: false, context: '', sources: [], error: e.message };
   }
+
+  return { usedRag: false, context: '', sources: [] };
+}
+
+/**
+ * Filter results by relevance, enforce the context character budget, and format
+ * the context block. Returns null when nothing usable survives.
+ * @param {string} question
+ * @param {Array} results
+ * @param {'vector'|'keyword'} mode
+ */
+function buildContext(question, results, mode) {
+  if (!results || results.length === 0) return null;
+
+  const good = results.filter(r => r.score >= MIN_SCORE);
+  const kept = [];
+  let total = 0;
+  for (const r of good) {
+    const piece = formatChunk(r);
+    if (total + piece.length > MAX_CONTEXT_CHARS && kept.length > 0) break; // budget hit
+    kept.push(r);
+    total += piece.length;
+    if (kept.length >= TOP_K) break;
+  }
+  if (kept.length === 0) {
+    console.log('[Knowledge] %s search: %d results, all below score floor %s.', mode, results.length, MIN_SCORE);
+    return null;
+  }
+
+  const context = kept.map(formatChunk).join('\n---\n');
+  const sources = kept.map(r => ({ sourceFile: r.sourceFile, pageNumber: r.pageNumber, score: +r.score.toFixed(3) }));
+  console.log('[Knowledge] %s retrieval: "%s" → %d chunks (scores: %s).',
+    mode, question.slice(0, 60), kept.length, sources.map(s => s.score).join(', '));
+  return { usedRag: true, context, sources, retrievalMode: mode };
 }
 
 /**

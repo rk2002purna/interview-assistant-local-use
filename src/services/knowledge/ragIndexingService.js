@@ -25,6 +25,8 @@ const ingestion = require('./pdfIngestionService');
 const chunking = require('./chunkingService');
 const embeddings = require('./embeddingService');
 const vectorStore = require('./vectorStoreService');
+const lexicalStore = require('./lexicalStoreService');
+const { isNativeModuleError } = require('./nativeSupport');
 
 /**
  * Rebuild the entire index from scratch.
@@ -98,51 +100,106 @@ async function rebuildIndex(opts) {
     status.setProgress({ phase: 'Creating chunks', totalChunks: chunkCount, currentChunk: 0 });
     console.log('[Knowledge] Created %d chunks.', chunkCount);
 
-    // 5. Embed (batched) with progress.
-    status.setProgress({ phase: 'Generating embeddings', totalChunks: chunkCount, currentChunk: 0 });
-    console.log('[Knowledge] Generating embeddings for %d chunks (model=%s)...', chunkCount, embeddings.getModelId());
+    // 5. Pick the retrieval mode ONCE, before indexing, so we never end up with
+    //    a half-vector/half-keyword index.
+    //
+    //    'vector'  → embeddings (onnxruntime-node) + LanceDB. Best quality.
+    //    'keyword' → pure-JS BM25. Used when either native module cannot load on
+    //                this machine (e.g. missing MSVC runtime, no admin rights).
+    let mode = 'vector';
+    let nativeIssue = null;
+    status.setProgress({ phase: 'Preparing index' });
+    try {
+      await embeddings.embedTexts(['knowledge base capability probe'], { apiKey });
+      await vectorStore.initializeVectorStore();
+    } catch (e) {
+      if (!isNativeModuleError(e)) throw e; // a real error — surface it
+      mode = 'keyword';
+      nativeIssue = e.message;
+      console.warn('[Knowledge] Native modules unavailable — falling back to keyword (BM25) index. Reason: %s', e.message);
+      // Drop the unusable vector directory so status reflects reality.
+      await vectorStore.clearVectorStore();
+    }
+
+    // 6. Build the index (batched) with progress.
+    const phaseLabel = mode === 'vector' ? 'Generating embeddings' : 'Building keyword index';
+    status.setProgress({ phase: phaseLabel, totalChunks: chunkCount, currentChunk: 0 });
+    console.log('[Knowledge] %s for %d chunks (mode=%s)...', phaseLabel, chunkCount, mode);
+
+    if (mode === 'keyword') {
+      lexicalStore.clear();
+      lexicalStore.beginBuild();
+    }
+
     const texts = chunks.map(c => c.text);
     let done = 0;
     const BATCH = 32;
     for (let i = 0; i < texts.length; i += BATCH) {
       const slice = texts.slice(i, i + BATCH);
-      const vecs = await embeddings.embedTexts(slice, { apiKey });
       const records = [];
-      for (let j = 0; j < slice.length; j++) {
-        const c = chunks[i + j];
-        records.push({
-          id: c.id, text: c.text, embedding: vecs[j],
-          sourceFile: c.sourceFile, pageNumber: c.pageNumber, chunkIndex: c.chunkIndex,
-          createdAt: new Date().toISOString()
-        });
+
+      if (mode === 'vector') {
+        const vecs = await embeddings.embedTexts(slice, { apiKey });
+        for (let j = 0; j < slice.length; j++) {
+          const c = chunks[i + j];
+          records.push({
+            id: c.id, text: c.text, embedding: vecs[j],
+            sourceFile: c.sourceFile, pageNumber: c.pageNumber, chunkIndex: c.chunkIndex,
+            createdAt: new Date().toISOString()
+          });
+        }
+        await vectorStore.addChunks(records);
+      } else {
+        for (let j = 0; j < slice.length; j++) {
+          const c = chunks[i + j];
+          records.push({
+            id: c.id, text: c.text,
+            sourceFile: c.sourceFile, pageNumber: c.pageNumber, chunkIndex: c.chunkIndex,
+            createdAt: new Date().toISOString()
+          });
+        }
+        lexicalStore.addChunks(records);
       }
-      await vectorStore.addChunks(records);
+
       done += slice.length;
       if (done % 64 === 0 || done === texts.length) {
-        console.log('[Knowledge]   embeddings %d/%d', done, texts.length);
+        console.log('[Knowledge]   indexed %d/%d', done, texts.length);
       }
-      status.setProgress({ phase: 'Generating embeddings', currentChunk: done, totalChunks: chunkCount });
+      status.setProgress({ phase: phaseLabel, currentChunk: done, totalChunks: chunkCount });
     }
 
-    // 6. Persist status.json.
+    if (mode === 'keyword') {
+      status.setProgress({ phase: 'Saving keyword index' });
+      lexicalStore.finalizeBuild();
+    } else {
+      // A previous keyword index would otherwise shadow fresh vector results.
+      lexicalStore.clear();
+    }
+
+    // 7. Persist status.json.
     status.writeStatus({
       indexed: true,
       pdfCount,
       pageCount,
       chunkCount,
       lastIndexedAt: new Date().toISOString(),
-      embeddingModel: embeddings.getModelId(),
-      embeddingDimension: embeddings.getDimension(),
-      vectorDbProvider: 'lancedb',
+      embeddingModel: mode === 'vector' ? embeddings.getModelId() : 'keyword-bm25',
+      embeddingDimension: mode === 'vector' ? embeddings.getDimension() : 0,
+      vectorDbProvider: mode === 'vector' ? 'lancedb' : 'json-bm25',
+      retrievalMode: mode,
+      nativeUnavailableReason: nativeIssue,
       lastError: null
     });
     status.setProgress({ state: 'ready', phase: 'Knowledge base ready', currentChunk: chunkCount, totalChunks: chunkCount });
 
-    const message = failedFiles.length
+    let message = failedFiles.length
       ? `Knowledge base indexed with ${failedFiles.length} failed file(s): ${failedFiles.join(', ')}`
       : 'Knowledge base indexed successfully';
-    console.log('[Knowledge] Rebuild complete: %d PDFs, %d pages, %d chunks.', pdfCount, pageCount, chunkCount);
-    return { success: true, pdfCount, pageCount, chunkCount, failedFiles, vectorDbPath: vectorDbDir, message };
+    if (mode === 'keyword') {
+      message += ' (keyword search mode — the local AI embedding engine could not load on this machine, so documents are matched by keywords instead of meaning)';
+    }
+    console.log('[Knowledge] Rebuild complete: %d PDFs, %d pages, %d chunks, mode=%s.', pdfCount, pageCount, chunkCount, mode);
+    return { success: true, pdfCount, pageCount, chunkCount, failedFiles, vectorDbPath: vectorDbDir, retrievalMode: mode, message };
   } catch (e) {
     console.error('[Knowledge] Rebuild FAILED:', e.message, e.stack);
     status.writeStatus({ indexed: false, pdfCount, chunkCount, lastError: e.message });
