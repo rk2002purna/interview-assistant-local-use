@@ -74,6 +74,14 @@ function getStatusPath() {
   return path.join(getKnowledgeBaseRoot(), 'status.json');
 }
 
+/**
+ * Path to the pure-JS keyword (BM25) index. Used as the retrieval fallback when
+ * the native embedding/vector modules cannot load — see lexicalStoreService.
+ */
+function getLexicalIndexPath() {
+  return path.join(getKnowledgeBaseRoot(), 'lexical-index.json');
+}
+
 /** Directory where the local embedding model is cached (transformers.js). */
 function getModelsDir() {
   return path.join(getKnowledgeBaseRoot(), 'models');
@@ -97,6 +105,7 @@ module.exports = {
   getSourcePdfDir,
   getVectorDbDir,
   getStatusPath,
+  getLexicalIndexPath,
   getModelsDir,
   ensureDirectories
 };
