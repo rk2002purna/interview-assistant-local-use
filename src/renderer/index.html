@@ -1665,12 +1665,18 @@ function clearChatHistory(){
 
 // ===== ADAPTIVE QUESTION CLASSIFICATION =====
 // Token budgets — can be tuned here without touching anything else
+// Output token CEILINGS (not targets). Answer length is steered by the prompt's
+// length guidance below; these caps only exist so a reply is never cut off
+// mid-sentence. The old values (120-600) truncated ordinary answers — e.g.
+// "What is a RestController?" classifies as `quick` and died at 120 tokens.
+// Raising a ceiling does not make answers longer or slower: streaming ends when
+// the model stops, so unused budget costs nothing.
 var AI_TOKENS = {
-  quick:            120,
-  normal:           220,
-  detailed:         350,
-  coding_explanation: 450,
-  system_design:    600
+  quick:            400,
+  normal:           700,
+  detailed:         1000,
+  coding_explanation: 1400,
+  system_design:    1800
 };
 var AI_TEMP = {
   quick:            0.25,

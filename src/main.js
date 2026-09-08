@@ -495,8 +495,16 @@ ipcMain.handle('call-gemini-api', async (event, { apiKey, model, messages, syste
 ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, model, messages, systemPrompt, streamId, maxTokens, temperature }) => {
   const sender = event.sender;
   // Use caller-supplied values; fall back to safe defaults
-  const resolvedMaxTokens = maxTokens || 220;
+  let resolvedMaxTokens = maxTokens || 700;
   const resolvedTemp = (temperature !== undefined && temperature !== null) ? temperature : 0.25;
+
+  // Reasoning models (gpt-oss, o1/o3, R1, QwQ, "thinking" variants) spend part of
+  // max_tokens on hidden reasoning before emitting any visible answer. With a
+  // tight budget the reply arrives truncated — or empty, because reasoning
+  // consumed all of it. Give those models extra headroom.
+  if (/(gpt-oss|o1-|o3-|deepseek-r1|[-/]r1\b|qwq|thinking|reason)/i.test(String(model || ''))) {
+    resolvedMaxTokens = Math.max(resolvedMaxTokens * 3, 1500);
+  }
 
   // OmniRoute is a local OpenAI-compatible gateway. Its client enforces a
   // loopback-only URL so prompts and local gateway credentials cannot be sent
@@ -705,6 +713,7 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
       let errorMsg = null;
       let streamUsage = null;
       let rawBody = '';
+      let finishReason = null;
 
       res.on('data', chunk => {
         const text = chunk.toString('utf8');
@@ -729,7 +738,9 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
               streamUsage = json.usage;
               continue;
             }
-            const delta = json.choices && json.choices[0] && json.choices[0].delta;
+            const choice0 = json.choices && json.choices[0];
+            if (choice0 && choice0.finish_reason) finishReason = choice0.finish_reason;
+            const delta = choice0 && choice0.delta;
             if (delta && delta.content) {
               fullText += delta.content;
               sender.send('ai-stream-chunk', { streamId: streamId, delta: delta.content });
@@ -770,9 +781,24 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
           if (!fullText && rawBody) {
             fullText = extractTextFromRawBody(rawBody);
           }
+          // Make truncation visible instead of silently returning half an answer.
+          if (fullText && finishReason === 'length') {
+            const note = '\n\n[Answer was cut off by the token limit.]';
+            sender.send('ai-stream-chunk', { streamId: streamId, delta: note });
+            fullText += note;
+          }
+
           // Never resolve a silent empty success — surface a real error so it is
           // visible and diagnosable instead of a blank answer.
           if (!fullText) {
+            if (finishReason === 'length') {
+              const msg = 'The model used its entire token budget on internal reasoning and returned no answer. Pick a non-reasoning model, or raise the token budget.';
+              sender.send('ai-usage-update', {
+                provider: provider, model: model, usage: {}, error: msg
+              });
+              resolve({ error: { message: msg } });
+              return;
+            }
             const detail = rawBody
               ? ': ' + rawBody.substring(0, 200)
               : ' (no response body received)';
