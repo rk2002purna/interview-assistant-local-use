@@ -23,6 +23,18 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
+/**
+ * Ingestible document extensions. Duplicated from pdfIngestionService on
+ * purpose: this module must keep working (upload/list/delete) even if an
+ * ingestion dependency fails to load in the packaged app.
+ */
+const SUPPORTED_DOC_EXTENSIONS = ['.pdf', '.md', '.markdown', '.txt'];
+
+function isSupportedDocumentName(fileName) {
+  const lower = String(fileName).toLowerCase();
+  return SUPPORTED_DOC_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
 // Load each module INDEPENDENTLY so a failure in one (e.g. native LanceDB)
 // does not disable the others. PDF upload/listing must work even if the
 // vector DB native module fails to load in the packaged .exe.
@@ -63,7 +75,7 @@ function seedPdfsFromDevFolder() {
     const seedDir = path.join(__dirname, '..', '..', 'knowledge-base-seed');
     if (!fs.existsSync(seedDir)) return; // No seed folder → skip
     
-    const files = fs.readdirSync(seedDir).filter(f => f.toLowerCase().endsWith('.pdf'));
+    const files = fs.readdirSync(seedDir).filter(isSupportedDocumentName);
     if (files.length === 0) return;
 
     console.log(`[Knowledge] Found ${files.length} seed PDFs in development folder`);
@@ -107,8 +119,12 @@ function registerKnowledgeIpc() {
     console.log('[Knowledge] select-pdfs handler called');
     const win = BrowserWindow.fromWebContents(event.sender);
     const opts = {
-      title: 'Select PDFs for the Guidewire Knowledge Base',
-      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      title: 'Select documents for the Knowledge Base (PDF, Markdown, or text)',
+      filters: [
+        { name: 'Documents', extensions: ['pdf', 'md', 'markdown', 'txt'] },
+        { name: 'PDF', extensions: ['pdf'] },
+        { name: 'Markdown / text', extensions: ['md', 'markdown', 'txt'] }
+      ],
       properties: ['openFile', 'multiSelections']
     };
     let result;
@@ -184,11 +200,13 @@ function registerKnowledgeIpc() {
       const dir = paths.getSourcePdfDir();
       if (fs.existsSync(dir)) {
         for (const f of fs.readdirSync(dir)) {
-          if (f.toLowerCase().endsWith('.pdf')) {
+          if (isSupportedDocumentName(f)) {
             try { fs.unlinkSync(path.join(dir, f)); } catch (e) { /* keep going */ }
           }
         }
       }
+      // Also drop the keyword index (used when native modules are unavailable).
+      try { require('../services/knowledge/lexicalStoreService').clear(); } catch (e) { /* optional */ }
       // Delete the vector DB.
       await vectorStore.clearVectorStore();
       // Reset status.
@@ -283,13 +301,13 @@ function copyPdfSafely(src, destDir) {
   });
 }
 
-/** List all copied PDFs with metadata (Feature 1.2). */
+/** List all copied documents with metadata (Feature 1.2). */
 function listCopiedPdfs() {
   const dir = paths.getSourcePdfDir();
   if (!fs.existsSync(dir)) return [];
   const out = [];
   for (const name of fs.readdirSync(dir)) {
-    if (!name.toLowerCase().endsWith('.pdf')) continue;
+    if (!isSupportedDocumentName(name)) continue;
     const full = path.join(dir, name);
     try {
       const st = fs.statSync(full);
