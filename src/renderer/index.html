@@ -63,6 +63,9 @@
     #answer-wrap { flex: 1; overflow-y: auto; padding: 10px 14px; }
     #answer-wrap .label { display: none; }
     #answer-text { font-size: 13px; color: #e2e8f0; line-height: 1.7; white-space: pre-wrap; }
+    /* Knowledge-base attribution badge shown under the answer. */
+    #kb-sources { margin-top: 8px; padding: 6px 8px; font-size: 10px; line-height: 1.4; color: #9ae6b4; background: rgba(72,187,120,0.10); border-left: 2px solid rgba(72,187,120,0.55); border-radius: 4px; word-break: break-word; white-space: normal; }
+    #kb-sources.hidden { display: none; }
     #answer-text .thinking-dots { color: #ed8936; }
     #answer-text code { background: rgba(99,179,237,0.12); color: #90cdf4; padding: 1px 5px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 12px; }
     #answer-text pre { background: rgba(0,0,0,0.4); border: 1px solid rgba(99,179,237,0.15); border-radius: 8px; padding: 10px; margin: 8px 0; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 11px; color: #90cdf4; white-space: pre; }
@@ -147,7 +150,7 @@
 <body>
 <button id="mini-restore-btn" onclick="restoreWindow()" title="Restore">&#9744;</button>
 <div id="app">
-  <div id="answer-wrap"><div class="label">Answer</div><div id="answer-text">Select a mode to get started.</div></div>
+  <div id="answer-wrap"><div class="label">Answer</div><div id="answer-text">Select a mode to get started.</div><div id="kb-sources" class="hidden"></div></div>
   <div id="transcript-box"><div class="label">Detected Question</div><div id="transcript-text"></div></div>
   <div id="api-warning">No AI provider is configured. <a onclick="openSettings()">Open Settings</a></div>
   <div id="screen-indicator" class="mode-indicator">
@@ -1534,9 +1537,12 @@ async function askQuestion(question){
 
   // ── RAG: Retrieve Guidewire knowledge if available ──
   var ragContext = '';
+  var lastRagResult = null;
+  clearKbSources();
   try {
     if (window.knowledgeBase && window.knowledgeBase.ragSearch) {
       var ragResult = await window.knowledgeBase.ragSearch(question);
+      lastRagResult = ragResult;
       console.log('[Knowledge] ragSearch returned:', ragResult ? JSON.stringify({ usedRag: ragResult.usedRag, sources: ragResult.sources, error: ragResult.error, contextLen: (ragResult.context||'').length }) : 'null');
       if (ragResult && ragResult.context && !ragResult.error) {
         var srcList = (ragResult.sources || []).map(function(s){ return s.sourceFile + (s.pageNumber ? ' p.'+s.pageNumber : '') + ' ('+s.score+')'; }).join(', ');
@@ -1598,6 +1604,8 @@ async function askQuestion(question){
       // Update live answer cache and display (only if not in memory view)
       liveAnswerText = renderAnswer(ans);
       if(!viewingMemoryId) el.innerHTML=liveAnswerText;
+      // Show which knowledge-base chunks fed this answer (or nothing if none did).
+      if(!viewingMemoryId) showKbSources(lastRagResult);
       renderChatHistory();
     }
   }catch(e){ if(!viewingMemoryId) el.textContent='Network error: '+e.message; }
@@ -1901,6 +1909,31 @@ function askManual(){var input=document.getElementById('manual-input');var q=inp
 function renderAnswer(text){return text.replace(/```(\w*)\n?([\s\S]*?)```/g,function(_,l,c){return '<pre>'+escapeHtml(c.trim())+'</pre>';}).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');}
 function escapeHtml(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function setStatus(msg){document.getElementById('status-text').textContent=msg;}
+
+// Persistent proof of whether the knowledge base was used for THIS answer.
+// The status line is overwritten by 'Answering...' as soon as tokens arrive, and
+// the system prompt forbids the model from citing sources in its text, so this
+// badge is the reliable way to confirm retrieval actually fed the model.
+function showKbSources(ragResult){
+  var el=document.getElementById('kb-sources');
+  if(!el)return;
+  if(!ragResult||!ragResult.usedRag||!(ragResult.sources||[]).length){
+    el.className='hidden';
+    el.textContent='';
+    return;
+  }
+  var mode=ragResult.retrievalMode==='keyword'?'keyword match':'semantic match';
+  var parts=ragResult.sources.map(function(s){
+    return s.sourceFile+(s.pageNumber?' p.'+s.pageNumber:'')+' ('+s.score+')';
+  });
+  el.className='';
+  el.textContent='📚 Knowledge base used ('+mode+'): '+parts.join(' · ');
+}
+
+function clearKbSources(){
+  var el=document.getElementById('kb-sources');
+  if(el){el.className='hidden';el.textContent='';}
+}
 function openSettings(){ipcRenderer.send('open-settings');}
 function openKnowledgeBase(){ipcRenderer.send('open-knowledge-base');}
 function minimize(){
