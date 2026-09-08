@@ -1343,6 +1343,10 @@ async function toggleMic(){if(isListening){stopAllAudio();}else{var ok=await sta
 
 // ===== AI (shared) =====
 // Try primary, then fallback if primary errors. Streams tokens via onDelta.
+// Longest rate-limit wait worth honoring mid-interview. Beyond this we switch
+// provider instead of leaving the user staring at a spinner.
+var MAX_RATE_LIMIT_WAIT_MS = 4000;
+
 // Stream from a single provider, rotating across its configured account keys.
 // Each account failure advances a sticky pointer so the next attempt/request
 // starts from a fresh account. Returns the first success, or an error only
@@ -1355,6 +1359,11 @@ async function streamProviderWithRotation(provider, model, messages, systemPromp
   var start = keyIndexByProvider[provider] || 0;
   if (start >= keys.length) start = 0;
   var lastError = null;
+  // Shortest wait advertised by any rate-limited account, used only if EVERY
+  // account is limited (rotating is instant, so we always prefer that first).
+  var shortestRetryMs = null;
+  var allRateLimited = true;
+
   for (var attempt = 0; attempt < keys.length; attempt++) {
     var idx = (start + attempt) % keys.length;
     if (keys.length > 1) setStatus((label || provider) + ': account ' + (idx + 1) + '/' + keys.length + '...');
@@ -1365,10 +1374,39 @@ async function streamProviderWithRotation(provider, model, messages, systemPromp
       return result;
     }
     lastError = result.error;
+    if (result.error.rateLimited) {
+      if (typeof result.error.retryAfterMs === 'number' && result.error.retryAfterMs >= 0) {
+        if (shortestRetryMs === null || result.error.retryAfterMs < shortestRetryMs) {
+          shortestRetryMs = result.error.retryAfterMs;
+        }
+      }
+    } else {
+      allRateLimited = false; // a non-429 failure: waiting would not help
+    }
     trackUsage({ provider: provider, model: model, usage: {}, error: 'account ' + (idx + 1) + '/' + keys.length + ': ' + result.error.message });
     keyIndexByProvider[provider] = (idx + 1) % keys.length; // rotate for the next attempt/request
     if (keys.length > 1) console.warn('[key-rotation] ' + provider + ' account ' + (idx + 1) + ' failed:', result.error.message);
   }
+
+  // Every account was rate-limited. If the wait is short enough to be useful
+  // mid-interview, honor Retry-After once and try the freshest account again.
+  // Longer waits are left to the caller so it can switch providers instead.
+  if (allRateLimited && shortestRetryMs !== null && shortestRetryMs <= MAX_RATE_LIMIT_WAIT_MS) {
+    var waitMs = Math.max(250, shortestRetryMs + 150); // small cushion for clock skew
+    console.warn('[rate-limit] all ' + provider + ' account(s) limited — waiting ' + waitMs + 'ms then retrying once.');
+    setStatus((label || provider) + ': rate limited, retrying in ' + Math.ceil(waitMs / 1000) + 's...');
+    await new Promise(function(r) { setTimeout(r, waitMs); });
+    var retryIdx = keyIndexByProvider[provider] || 0;
+    if (onAttemptStart) onAttemptStart();
+    var retryResult = await invokeProviderStream(provider, keys[retryIdx], model, messages, systemPrompt, onDelta, maxTokens, temperature);
+    if (!retryResult.error) {
+      keyIndexByProvider[provider] = retryIdx;
+      return retryResult;
+    }
+    lastError = retryResult.error;
+    trackUsage({ provider: provider, model: model, usage: {}, error: 'retry after rate limit: ' + retryResult.error.message });
+  }
+
   return { error: { message: 'All ' + keys.length + ' ' + provider + ' account(s) failed. Last: ' + (lastError ? lastError.message : 'unknown') }, allKeysFailed: true };
 }
 

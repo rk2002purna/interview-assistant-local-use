@@ -13,6 +13,61 @@ const {
 
 let mainWindow;
 
+/**
+ * Parse a "wait this long" hint out of rate-limit response headers.
+ * Handles the standard `retry-after` (seconds or HTTP date) plus Groq-style
+ * `x-ratelimit-reset-*` durations like "7.66s", "2m59.56s", "1h2m3s".
+ * @returns {number|null} milliseconds to wait, or null when unknown.
+ */
+function parseRetryAfterMs(headers) {
+  if (!headers) return null;
+
+  const read = (name) => {
+    const value = headers[name] || headers[name.toLowerCase()];
+    return Array.isArray(value) ? value[0] : value;
+  };
+
+  const retryAfter = read('retry-after');
+  if (retryAfter !== undefined && retryAfter !== null && retryAfter !== '') {
+    const seconds = Number(retryAfter);
+    if (!isNaN(seconds)) return Math.max(0, Math.round(seconds * 1000));
+    const when = Date.parse(retryAfter); // HTTP-date form
+    if (!isNaN(when)) return Math.max(0, when - Date.now());
+  }
+
+  // Fall back to whichever reset window is nearest.
+  const candidates = ['x-ratelimit-reset-requests', 'x-ratelimit-reset-tokens']
+    .map((name) => parseDurationToMs(read(name)))
+    .filter((ms) => ms !== null);
+  if (candidates.length) return Math.min.apply(null, candidates);
+
+  return null;
+}
+
+/** Parse "7.66s" / "2m59.56s" / "1h2m3s" / "1500ms" / "12" into milliseconds. */
+function parseDurationToMs(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const text = String(value).trim();
+
+  const plain = Number(text);
+  if (!isNaN(plain)) return Math.max(0, Math.round(plain * 1000)); // bare seconds
+
+  const msOnly = /^(\d+(?:\.\d+)?)ms$/i.exec(text);
+  if (msOnly) return Math.round(Number(msOnly[1]));
+
+  const parts = text.match(/(\d+(?:\.\d+)?)(h|m|s)/gi);
+  if (!parts) return null;
+  let total = 0;
+  for (const part of parts) {
+    const m = /(\d+(?:\.\d+)?)(h|m|s)/i.exec(part);
+    if (!m) continue;
+    const amount = Number(m[1]);
+    const unit = m[2].toLowerCase();
+    total += unit === 'h' ? amount * 3600000 : unit === 'm' ? amount * 60000 : amount * 1000;
+  }
+  return total > 0 ? Math.round(total) : null;
+}
+
 // Recover assistant text from a raw response body when incremental SSE parsing
 // produced nothing. This happens when the response isn't delivered as live SSE
 // — e.g. a corporate inspection proxy buffered the whole response, or the
@@ -762,10 +817,25 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
           } catch(e) {
             parsedErr = 'HTTP ' + res.statusCode + ': ' + rawBody.substring(0, 200);
           }
+          // Surface rate-limit details so the renderer can decide between
+          // rotating to another account (instant) and waiting out the window.
+          const retryAfterMs = parseRetryAfterMs(res.headers);
+          if (res.statusCode === 429) {
+            parsedErr = 'Rate limited (429)' +
+              (retryAfterMs ? ' — retry in ' + Math.ceil(retryAfterMs / 1000) + 's' : '') +
+              ': ' + parsedErr;
+          }
           sender.send('ai-usage-update', {
             provider: provider, model: model, usage: {}, error: parsedErr
           });
-          resolve({ error: { message: parsedErr } });
+          resolve({
+            error: {
+              message: parsedErr,
+              status: res.statusCode,
+              rateLimited: res.statusCode === 429,
+              retryAfterMs: retryAfterMs
+            }
+          });
           return;
         }
 
