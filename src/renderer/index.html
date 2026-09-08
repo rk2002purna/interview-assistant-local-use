@@ -923,9 +923,17 @@ function startPassiveRecording(stream) {
   passiveBaseline = 0;
 
   // Use higher bitrate (96 kbps) for better Whisper accuracy on system audio
+  // Start every recording from an empty buffer. Auto mode stops and restarts the
+  // recorder for each utterance, so a late chunk from the previous session could
+  // otherwise lead this one — leaving the blob without its opening WebM header,
+  // which Whisper rejects as "not a valid media file".
+  passiveChunks = [];
   passiveRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 96000 });
 
+  var passiveRecorderSession = passiveRecorder;
   passiveRecorder.ondataavailable = function(e) {
+    // Ignore chunks arriving from a superseded recorder.
+    if (passiveRecorder !== passiveRecorderSession) return;
     if (e.data.size > 0) passiveChunks.push(e.data);
   };
 
