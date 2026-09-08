@@ -13,6 +13,81 @@ const {
 
 let mainWindow;
 
+/**
+ * Identify an audio container from its leading bytes (magic numbers).
+ * Returns 'webm' | 'ogg' | 'wav' | 'mp4', or null when the buffer has no
+ * recognizable header — which means it is not a playable/decodable file.
+ */
+function detectAudioContainer(buffer) {
+  if (!buffer || buffer.length < 12) return null;
+
+  // Matroska/WebM: EBML magic 1A 45 DF A3
+  if (buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) return 'webm';
+  // Ogg: 'OggS'
+  if (buffer.toString('ascii', 0, 4) === 'OggS') return 'ogg';
+  // WAV: 'RIFF' .... 'WAVE'
+  if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WAVE') return 'wav';
+  // MP4/M4A: 'ftyp' at offset 4
+  if (buffer.toString('ascii', 4, 8) === 'ftyp') return 'mp4';
+
+  return null;
+}
+
+/**
+ * Parse a "wait this long" hint out of rate-limit response headers.
+ * Handles the standard `retry-after` (seconds or HTTP date) plus Groq-style
+ * `x-ratelimit-reset-*` durations like "7.66s", "2m59.56s", "1h2m3s".
+ * @returns {number|null} milliseconds to wait, or null when unknown.
+ */
+function parseRetryAfterMs(headers) {
+  if (!headers) return null;
+
+  const read = (name) => {
+    const value = headers[name] || headers[name.toLowerCase()];
+    return Array.isArray(value) ? value[0] : value;
+  };
+
+  const retryAfter = read('retry-after');
+  if (retryAfter !== undefined && retryAfter !== null && retryAfter !== '') {
+    const seconds = Number(retryAfter);
+    if (!isNaN(seconds)) return Math.max(0, Math.round(seconds * 1000));
+    const when = Date.parse(retryAfter); // HTTP-date form
+    if (!isNaN(when)) return Math.max(0, when - Date.now());
+  }
+
+  // Fall back to whichever reset window is nearest.
+  const candidates = ['x-ratelimit-reset-requests', 'x-ratelimit-reset-tokens']
+    .map((name) => parseDurationToMs(read(name)))
+    .filter((ms) => ms !== null);
+  if (candidates.length) return Math.min.apply(null, candidates);
+
+  return null;
+}
+
+/** Parse "7.66s" / "2m59.56s" / "1h2m3s" / "1500ms" / "12" into milliseconds. */
+function parseDurationToMs(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const text = String(value).trim();
+
+  const plain = Number(text);
+  if (!isNaN(plain)) return Math.max(0, Math.round(plain * 1000)); // bare seconds
+
+  const msOnly = /^(\d+(?:\.\d+)?)ms$/i.exec(text);
+  if (msOnly) return Math.round(Number(msOnly[1]));
+
+  const parts = text.match(/(\d+(?:\.\d+)?)(h|m|s)/gi);
+  if (!parts) return null;
+  let total = 0;
+  for (const part of parts) {
+    const m = /(\d+(?:\.\d+)?)(h|m|s)/i.exec(part);
+    if (!m) continue;
+    const amount = Number(m[1]);
+    const unit = m[2].toLowerCase();
+    total += unit === 'h' ? amount * 3600000 : unit === 'm' ? amount * 60000 : amount * 1000;
+  }
+  return total > 0 ? Math.round(total) : null;
+}
+
 // Recover assistant text from a raw response body when incremental SSE parsing
 // produced nothing. This happens when the response isn't delivered as live SSE
 // — e.g. a corporate inspection proxy buffered the whole response, or the
@@ -762,10 +837,25 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
           } catch(e) {
             parsedErr = 'HTTP ' + res.statusCode + ': ' + rawBody.substring(0, 200);
           }
+          // Surface rate-limit details so the renderer can decide between
+          // rotating to another account (instant) and waiting out the window.
+          const retryAfterMs = parseRetryAfterMs(res.headers);
+          if (res.statusCode === 429) {
+            parsedErr = 'Rate limited (429)' +
+              (retryAfterMs ? ' — retry in ' + Math.ceil(retryAfterMs / 1000) + 's' : '') +
+              ': ' + parsedErr;
+          }
           sender.send('ai-usage-update', {
             provider: provider, model: model, usage: {}, error: parsedErr
           });
-          resolve({ error: { message: parsedErr } });
+          resolve({
+            error: {
+              message: parsedErr,
+              status: res.statusCode,
+              rateLimited: res.statusCode === 429,
+              retryAfterMs: retryAfterMs
+            }
+          });
           return;
         }
 
@@ -919,6 +1009,7 @@ ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData, mimeType, 
   let contentType = 'audio/webm';
   if (mime.startsWith('audio/ogg')) { ext = 'ogg'; contentType = 'audio/ogg'; }
   else if (mime.startsWith('audio/mp4')) { ext = 'mp4'; contentType = 'audio/mp4'; }
+  else if (mime.startsWith('audio/wav') || mime.startsWith('audio/x-wav')) { ext = 'wav'; contentType = 'audio/wav'; }
   else if (mime.startsWith('audio/webm')) { ext = 'webm'; contentType = 'audio/webm'; }
 
   const tempPath = path.join(os.tmpdir(), 'interview-audio-' + Date.now() + '.' + ext);
@@ -932,6 +1023,25 @@ ipcMain.handle('transcribe-audio', async (event, { apiKey, audioData, mimeType, 
     if (fileSize < 1024) {
       try { fs.unlinkSync(tempPath); } catch(e) {}
       return { error: { message: 'Audio too short or empty — please speak clearly and try again.' } };
+    }
+
+    // Guard: verify the bytes really are the container we claim. A recording
+    // assembled without its opening header (e.g. the first MediaRecorder chunk
+    // was lost, or chunks from a restarted recorder got mixed) is large enough
+    // to pass the size check yet undecodable — which is exactly what makes
+    // Whisper answer "could not process file - is it a valid media file?".
+    // Catching it here avoids burning an API call and reports the real cause.
+    const container = detectAudioContainer(audioBuffer);
+    if (!container) {
+      try { fs.unlinkSync(tempPath); } catch(e) {}
+      console.warn('[STT] Discarded %d bytes: no recognizable audio container header (declared %s).', fileSize, mime);
+      return { error: { message: 'Recording was incomplete (missing audio header) — please record again.' } };
+    }
+    if (container !== ext) {
+      // Trust the bytes over the declared type so a container/extension
+      // mismatch cannot trip the provider's strict validation.
+      console.warn('[STT] Declared %s but bytes are %s — sending as %s.', ext, container, container);
+      contentType = 'audio/' + container;
     }
 
     return new Promise((resolve) => {
