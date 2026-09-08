@@ -29,13 +29,90 @@ async function getPdfjs() {
   return _pdfjsPromise;
 }
 
-/** List every .pdf file in the source-pdfs directory. */
+/**
+ * Document formats we can ingest. Markdown/plain text are preferred over PDF:
+ * their text needs no reconstruction, so no column interleaving, hyphenation
+ * splits, or header/footer noise — which matters most for keyword retrieval.
+ */
+const SUPPORTED_EXTENSIONS = ['.pdf', '.md', '.markdown', '.txt'];
+
+function isSupportedDocument(fileName) {
+  const lower = String(fileName).toLowerCase();
+  return SUPPORTED_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+/** List every ingestible document in the source directory. */
 function listPdfFiles() {
   const dir = paths.getSourcePdfDir();
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir)
-    .filter(f => f.toLowerCase().endsWith('.pdf'))
+    .filter(isSupportedDocument)
     .map(f => path.join(dir, f));
+}
+
+/**
+ * Reduce Markdown to plain prose while keeping the words intact.
+ * Deliberately conservative: `_` and `*` are left alone so identifiers like
+ * `policy_period` are not mangled, and fenced-code CONTENT is kept (only the
+ * fence markers go) because code is often the useful part.
+ */
+function stripMarkdown(md) {
+  return String(md)
+    .replace(/```[a-zA-Z0-9+-]*\n?/g, '')       // fence markers only
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')          // heading markers, keep the text
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')        // images
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')     // links → link text
+    .replace(/^\s{0,3}>\s?/gm, '')               // blockquote markers
+    .replace(/\*\*/g, '')                        // bold
+    .replace(/`/g, '')                           // inline code ticks
+    .replace(/^\s{0,3}[-*+]\s+/gm, '')           // bullet markers
+    .replace(/^\s*\|?[\s:|-]{5,}\|?\s*$/gm, '')  // table separator rows
+    .replace(/\|/g, ' ')                         // table cell pipes
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Extract text from a Markdown or plain-text document.
+ *
+ * Markdown is split on headings so each "page" is one coherent topic, and the
+ * heading text stays attached to its body (its keywords are usually the best
+ * match for a question). Plain text is returned whole and left to the chunker.
+ *
+ * @returns {{sourceFile:string, pageNumber:number, text:string}[]}
+ */
+function extractTextDocument(filePath) {
+  const sourceFile = path.basename(filePath);
+  const raw = fs.readFileSync(filePath, 'utf8').replace(/\r\n/g, '\n');
+
+  if (!/\.(md|markdown)$/i.test(filePath)) {
+    const text = stripMarkdown(raw);
+    return text ? [{ sourceFile, pageNumber: 1, text }] : [];
+  }
+
+  const sections = [];
+  let current = [];
+  for (const line of raw.split('\n')) {
+    const isHeading = /^\s{0,3}#{1,3}\s+\S/.test(line);
+    if (isHeading && current.some((l) => l.trim())) {
+      sections.push(current.join('\n'));
+      current = [line];
+    } else {
+      current.push(line);
+    }
+  }
+  if (current.length) sections.push(current.join('\n'));
+
+  const out = [];
+  let sectionNumber = 0;
+  for (const section of sections) {
+    const text = stripMarkdown(section);
+    if (!text) continue;
+    sectionNumber++;
+    out.push({ sourceFile, pageNumber: sectionNumber, text });
+  }
+  return out;
 }
 
 /**
@@ -94,7 +171,11 @@ async function extractAllPdfs(opts) {
     onProgress(idx + 1, files.length, fileName);
     console.log(`[Knowledge] Extracting text from ${fileName} (${idx + 1}/${files.length})...`);
     try {
-      const pdfPages = await extractPdf(file);
+      // PDFs go through pdfjs; Markdown/text is read directly (no native deps,
+      // no extraction loss).
+      const pdfPages = /\.pdf$/i.test(file)
+        ? await extractPdf(file)
+        : extractTextDocument(file);
       for (const p of pdfPages) {
         pages.push(p);
         pageCount++;
@@ -113,7 +194,12 @@ async function extractAllPdfs(opts) {
 }
 
 module.exports = {
+  SUPPORTED_EXTENSIONS,
+  isSupportedDocument,
   listPdfFiles,
+  listDocumentFiles: listPdfFiles, // clearer alias now that PDF is not the only format
   extractPdf,
+  extractTextDocument,
+  stripMarkdown,
   extractAllPdfs
 };

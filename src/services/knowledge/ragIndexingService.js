@@ -57,7 +57,7 @@ async function rebuildIndex(opts) {
     if (pdfCount === 0) {
       status.resetProgress();
       if (requirePdfs) {
-        const msg = 'No PDFs uploaded. Add PDFs first, then rebuild the index.';
+        const msg = 'No documents uploaded. Add PDF, Markdown (.md), or text files first, then rebuild the index.';
         status.writeStatus({ indexed: false, lastError: msg });
         status.setProgress({ state: 'error', message: msg });
         console.warn('[Knowledge] ' + msg);
