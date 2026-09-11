@@ -1,7 +1,7 @@
 {
-  "name": "interview-assistant-v3",
-  "version": "3.0.0",
-  "description": "Interview Assistant V3 - AI-powered interview helper",
+  "name": "interview-assistant-v4",
+  "version": "4.0.0",
+  "description": "Interview Assistant V4 - AI-powered interview helper",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
@@ -19,8 +19,8 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "com.interview.assistant.v3",
-    "productName": "Interview Assistant V3",
+    "appId": "com.interview.assistant.v4",
+    "productName": "Interview Assistant V4",
     "directories": {
       "output": "dist"
     },
@@ -59,7 +59,8 @@
         }
       ],
       "category": "public.app-category.productivity",
-      "identity": null
+      "identity": null,
+      "artifactName": "Interview-Assistant-V4-${version}-${arch}.${ext}"
     },
     "dmg": {
       "contents": [

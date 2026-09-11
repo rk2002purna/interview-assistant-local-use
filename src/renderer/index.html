@@ -648,15 +648,17 @@ async function analyzeScreenNow() {
   // Reset before each account/provider attempt so a failed partial stream is
   // not concatenated with the retry's output.
   function resetStreamForAttempt(){ streamed=''; firstChunk=true; if(!viewingMemoryId) answerEl.innerHTML='<span class="thinking-dots">Analyzing...</span>'; }
+  function handleVisionDelta(delta) {
+    if (firstChunk) { answerEl.innerHTML = ''; firstChunk = false; }
+    streamed += delta;
+    if (!viewingMemoryId) answerEl.innerHTML = renderAnswer(streamed);
+  }
   try {
+    var visionMessages = [{ role: 'user', content: content }];
     var data = await callAIStream(
-      [{ role: 'user', content: content }],
+      visionMessages,
       systemPrompt,
-      function(delta) {
-        if (firstChunk) { answerEl.innerHTML = ''; firstChunk = false; }
-        streamed += delta;
-        if (!viewingMemoryId) answerEl.innerHTML = renderAnswer(streamed);
-      },
+      handleVisionDelta,
       'vision',
       VISION_MAX_TOKENS,
       0.25,
@@ -666,7 +668,10 @@ async function analyzeScreenNow() {
     if (data.error) {
       answerEl.textContent = 'Error: ' + data.error.message;
     } else {
-      var ans = (data.content && data.content[0] && data.content[0].text) || streamed;
+      // Screen answers usually include a full code solution, so continuing on
+      // truncation matters most here.
+      var completedVision = await completeIfTruncated(data, visionMessages, systemPrompt, 'vision', VISION_MAX_TOKENS, 0.25, handleVisionDelta);
+      var ans = completedVision || streamed;
       conversationHistory.push({ role: 'user', content: '[Screen analysis - ' + count + ' screenshot(s)]' });
       conversationHistory.push({ role: 'assistant', content: ans });
       saveChatHistory(); renderChatHistory();
@@ -1355,6 +1360,60 @@ async function toggleMic(){if(isListening){stopAllAudio();}else{var ok=await sta
 // provider instead of leaving the user staring at a spinner.
 var MAX_RATE_LIMIT_WAIT_MS = 4000;
 
+// ===== ANSWER COMPLETION =====
+// A model stops early when it hits its output cap (OpenAI-compatible reports
+// finish_reason 'length'; Gemini reports 'MAX_TOKENS'), which showed up as an
+// answer cut off mid-sentence or mid-code. Rather than only raising the cap —
+// which can always be exceeded by a long code answer — ask the model to carry
+// on from where it stopped and stream the rest into the same answer.
+var MAX_CONTINUATIONS = 3;
+
+function isTruncatedFinish(reason) {
+  return reason === 'length' || reason === 'MAX_TOKENS';
+}
+
+/**
+ * Return the complete answer, continuing the response while the model reports
+ * it was cut off. Continuation chunks stream through the same onDelta, so the
+ * user sees the answer keep growing.
+ */
+async function completeIfTruncated(firstResult, baseMessages, systemPrompt, target, maxTokens, temperature, onDelta) {
+  var text = (firstResult.content && firstResult.content[0] && firstResult.content[0].text) || '';
+  var finish = firstResult.finishReason;
+  var rounds = 0;
+  var stoppedReason = null; // set when a continuation request itself failed
+
+  while (isTruncatedFinish(finish) && rounds < MAX_CONTINUATIONS) {
+    rounds++;
+    setStatus('Completing answer (' + rounds + ')...');
+    var contMessages = baseMessages.concat([
+      { role: 'assistant', content: text },
+      { role: 'user', content: 'Continue from exactly where you stopped. Do not repeat any text you already wrote and do not start over. If you stopped inside a code block, continue the code.' }
+    ]);
+    var next = await callAIStream(contMessages, systemPrompt, onDelta, target, maxTokens, temperature);
+    if (!next || next.error) {
+      stoppedReason = (next && next.error && next.error.message) || 'continuation request failed';
+      break;
+    }
+    var part = (next.content && next.content[0] && next.content[0].text) || '';
+    if (!part) {
+      stoppedReason = 'the model returned no further text';
+      break;
+    }
+    // Concatenate directly: the model was told to resume exactly where it
+    // stopped, so inserting whitespace could split a word or break indentation.
+    text += part;
+    finish = next.finishReason;
+  }
+
+  if (isTruncatedFinish(finish)) {
+    text += stoppedReason
+      ? '\n\n[Answer is incomplete — could not fetch the rest: ' + stoppedReason + ']'
+      : '\n\n[Answer may still be incomplete — the model kept hitting its output limit.]';
+  }
+  return text;
+}
+
 // Screen Analyzer budget. A screenshot is often a full coding problem, and the
 // answer has to fit an explanation PLUS a complete code solution — 600 tokens
 // truncated those mid-function. This is a ceiling, so short answers still end
@@ -1631,16 +1690,17 @@ async function askQuestion(question){
   // Reset before each account/provider attempt so a failed partial stream is
   // not concatenated with the retry's output.
   function resetStreamForAttempt(){ streamed=''; firstChunk=true; if(!viewingMemoryId) el.innerHTML='<span class="thinking-dots">Thinking...</span>'; }
+  function handleDelta(delta){
+    if(firstChunk){ el.innerHTML=''; firstChunk=false; setStatus('Answering...'); }
+    streamed+=delta;
+    // Only update live display if not currently viewing a memory snapshot
+    if(!viewingMemoryId) el.innerHTML=renderAnswer(streamed);
+  }
   try{
     var data=await callAIStream(
       historySlice,
       systemPrompt,
-      function(delta){
-        if(firstChunk){ el.innerHTML=''; firstChunk=false; setStatus('Answering...'); }
-        streamed+=delta;
-        // Only update live display if not currently viewing a memory snapshot
-        if(!viewingMemoryId) el.innerHTML=renderAnswer(streamed);
-      },
+      handleDelta,
       'text',
       maxTokens,
       temperature,
@@ -1649,7 +1709,10 @@ async function askQuestion(question){
     if(data.error){
       if(!viewingMemoryId) el.textContent='Error: '+data.error.message;
     } else {
-      var ans=(data.content && data.content[0] && data.content[0].text) || streamed;
+      // Carry on if the model stopped at its output limit, so the user gets a
+      // complete answer instead of half a sentence or half a code block.
+      var completed = await completeIfTruncated(data, historySlice, systemPrompt, 'text', maxTokens, temperature, handleDelta);
+      var ans = completed || streamed;
       conversationHistory.push({role:'assistant',content:ans});saveChatHistory();
       // Save to persistent memory (question was already pushed before the API call)
       addToMemory(question, ans);

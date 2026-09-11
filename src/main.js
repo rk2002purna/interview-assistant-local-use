@@ -692,11 +692,10 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
               resolve({ error: { message: 'Gemini returned empty response: ' + rawData.substring(0, 300) } });
             }
           } else {
-            // Got partial text — append a hint if truncated
+            // Truncation is surfaced via finishReason (below) so the renderer can
+            // request a continuation instead of showing half an answer.
             if (finishReason === 'MAX_TOKENS') {
-              const note = '\n\n[Response was truncated by token limit.]';
-              sender.send('ai-stream-chunk', { streamId: streamId, delta: note });
-              fullText += note;
+              console.warn('[AI] gemini/%s hit MAX_TOKENS — renderer will request a continuation.', model);
             }
             // Estimate Gemini token usage (streaming doesn't return usage)
             const estPrompt = Math.ceil(JSON.stringify(messages).length / 4);
@@ -706,7 +705,7 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
               model: model,
               usage: { prompt_tokens: estPrompt, completion_tokens: estComp, total_tokens: estPrompt + estComp, estimated: true }
             });
-            resolve({ content: [{ text: fullText }] });
+            resolve({ content: [{ text: fullText }], finishReason: finishReason });
           }
         });
       });
@@ -873,11 +872,11 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
           if (!fullText && rawBody) {
             fullText = extractTextFromRawBody(rawBody);
           }
-          // Make truncation visible instead of silently returning half an answer.
+          // Truncation is reported via finishReason so the renderer can ask the
+          // model to continue; do not inject a note into the text here or it
+          // would land in the middle of the finished answer.
           if (fullText && finishReason === 'length') {
-            const note = '\n\n[Answer was cut off by the token limit.]';
-            sender.send('ai-stream-chunk', { streamId: streamId, delta: note });
-            fullText += note;
+            console.warn('[AI] %s/%s hit the token limit — renderer will request a continuation.', provider, model);
           }
 
           // Never resolve a silent empty success — surface a real error so it is
@@ -912,7 +911,7 @@ ipcMain.handle('call-ai-stream', async (event, { provider, apiKey, baseUrl, mode
           sender.send('ai-usage-update', {
             provider: provider, model: model, usage: usageToReport
           });
-          const result = { content: [{ text: fullText }] };
+          const result = { content: [{ text: fullText }], finishReason: finishReason };
           if (streamUsage) result.usage = streamUsage;
           resolve(result);
         }
