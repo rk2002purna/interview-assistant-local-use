@@ -658,7 +658,7 @@ async function analyzeScreenNow() {
         if (!viewingMemoryId) answerEl.innerHTML = renderAnswer(streamed);
       },
       'vision',
-      600,   // vision always gets full token budget — screen may contain complex problems
+      VISION_MAX_TOKENS,
       0.25,
       resetStreamForAttempt
     );
@@ -1354,6 +1354,12 @@ async function toggleMic(){if(isListening){stopAllAudio();}else{var ok=await sta
 // Longest rate-limit wait worth honoring mid-interview. Beyond this we switch
 // provider instead of leaving the user staring at a spinner.
 var MAX_RATE_LIMIT_WAIT_MS = 4000;
+
+// Screen Analyzer budget. A screenshot is often a full coding problem, and the
+// answer has to fit an explanation PLUS a complete code solution — 600 tokens
+// truncated those mid-function. This is a ceiling, so short answers still end
+// early and cost nothing extra.
+var VISION_MAX_TOKENS = 3000;
 
 // Stream from a single provider, rotating across its configured account keys.
 // Each account failure advances a sticky pointer so the next attempt/request

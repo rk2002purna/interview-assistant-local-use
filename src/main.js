@@ -493,10 +493,12 @@ function buildGeminiGenerationConfig(model, maxOutputTokens, temperature) {
   return cfg;
 }
 
-ipcMain.handle('call-gemini-api', async (event, { apiKey, model, messages, systemPrompt }) => {
+ipcMain.handle('call-gemini-api', async (event, { apiKey, model, messages, systemPrompt, maxTokens, temperature }) => {
   const requestBody = {
     contents: messagesToGeminiContents(messages),
-    generationConfig: buildGeminiGenerationConfig(model)
+    // Pass the caller's budget through: omitting it fell back to 220 tokens,
+    // which truncated any answer containing code.
+    generationConfig: buildGeminiGenerationConfig(model, maxTokens || 700, temperature)
   };
   if (systemPrompt) {
     requestBody.systemInstruction = { parts: [{ text: systemPrompt }] };

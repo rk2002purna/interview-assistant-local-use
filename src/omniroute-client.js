@@ -244,10 +244,16 @@ function streamOmniRouteCompletion({
   if (systemPrompt) allMessages.push({ role: 'system', content: systemPrompt });
   allMessages.push(...messages);
 
+  // Does this request carry images? Used to give a precise hint if the route
+  // returns nothing, since most routes are text-only and silently produce an
+  // empty completion when handed image parts.
+  const hasImages = messages.some((m) => Array.isArray(m && m.content) &&
+    m.content.some((p) => p && p.type === 'image_url'));
+
   const requestBody = {
     model,
     messages: allMessages,
-    max_tokens: maxTokens || 220,
+    max_tokens: maxTokens || 700,
     temperature: temperature !== undefined && temperature !== null ? temperature : 0.25,
     stream: true
   };
@@ -370,6 +376,12 @@ function streamOmniRouteCompletion({
           } else if (reasoningChars) {
             message = 'OmniRoute returned only reasoning tokens and no answer text. ' +
               'Raise max tokens in Settings or select a non-reasoning model.';
+          } else if (hasImages) {
+            // Most OmniRoute routes are text-only and answer an image request
+            // with an empty completion rather than an explicit error.
+            message = 'OmniRoute returned nothing for a request containing images — the selected route (' +
+              model + ') most likely has no vision support. Pick a vision-capable route for the Screen Analyzer, ' +
+              'or set the Screen Analyzer primary to Gemini.';
           } else {
             const snippet = String(rawBody || '').trim().substring(0, 200);
             message = 'OmniRoute returned an empty response. Check the selected route/model in the OmniRoute dashboard.' +
